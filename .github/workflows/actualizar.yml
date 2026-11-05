@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:                   # nunca dos corridas a la vez
+  group: actualizar
+  cancel-in-progress: false
+
 jobs:
   actualizar:
     runs-on: ubuntu-24.04
@@ -31,4 +35,4 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add docs
           git commit -m "Actualización automática $(date -u +%F)" || echo "Sin cambios"
-          git push
+          for i in 1 2 3; do git pull --rebase origin main && git push && break || sleep 5; done
