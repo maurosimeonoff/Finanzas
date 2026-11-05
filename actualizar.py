@@ -424,6 +424,17 @@ NOMBRES_ETF = {"SPY": "State Street SPDR S&P 500 ETF Trust", "QQQ": "Invesco QQQ
                "IWM": "iShares Russell 2000 ETF", "EFA": "iShares MSCI EAFE ETF", "EEM": "iShares MSCI Emerging Markets ETF",
                "TLT": "iShares 20+ Year Treasury Bond ETF", "GLD": "SPDR Gold Shares", "VNQ": "Vanguard Real Estate ETF"}
 
+def _yf():  # usa yfinance si está instalado y es reciente; si no, lo instala/actualiza una sola vez
+    try:
+        import yfinance as yf
+        v = tuple(int(x) for x in yf.__version__.split(".")[:3] if x.isdigit())
+        if v < (0, 2, 50): raise ImportError
+    except Exception:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "yfinance"], check=True)
+        import importlib, yfinance as yf
+        importlib.reload(yf)
+    return yf
+
 def leer_extras():  # símbolos adicionales: activos.txt (uno por línea, # comenta) y el parámetro Otro_activo de Colab
     ex = []
     if os.path.exists("activos.txt"):
