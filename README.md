@@ -12,6 +12,9 @@ Tablero interactivo que calcula la **ponderación económica final** de una cart
 - Permite cambiar la asignación entre SPY, QQQ y BRK (pasos de 1%) y recalcula gráficos y tablas al instante.
 - Informa la fecha de dato de cada fuente y verifica que la cartera cierre en 100%.
 
+## Comparativa cuantitativa
+Pestaña con SPY, QQQ, BRK, la Cartera global (rebalanceo trimestral sin fricciones) y un activo más a elección. Para sumar símbolos al selector, editar `activos.txt`: la página se regenera sola.
+
 ## Cómo se actualiza solo
 GitHub Actions ejecuta `actualizar.py` todos los días a las 18:00 (hora de Buenos Aires) y publica `docs/index.html` en GitHub Pages.
 
@@ -27,4 +30,5 @@ GitHub Actions ejecuta `actualizar.py` todos los días a las 18:00 (hora de Buen
 | `Finanzas-GitHub.ipynb` | Cuaderno de Colab con el programa completo |
 | `actualizar.py` | Mismo programa, sin Colab, para la actualización diaria |
 | `.github/workflows/actualizar.yml` | Programación diaria 18:00 |
+| `activos.txt` | Símbolos extra para la comparativa |
 | `docs/index.html` | Página publicada (se genera sola) |
