@@ -4,13 +4,15 @@ on:
   schedule:
     - cron: "0 21 * * *"      # 21:00 UTC = 18:00 en Buenos Aires (UTC-3, sin horario de verano)
   workflow_dispatch:           # también se puede lanzar a mano desde la pestaña Actions
+  push:
+    paths: ["activos.txt"]     # al editar activos.txt se regenera la página enseguida
 
 permissions:
   contents: write
 
 jobs:
   actualizar:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +21,7 @@ jobs:
           python-version: "3.11"
       - name: Dependencias
         run: |
-          pip install -q pandas numpy requests openpyxl lxml selenium playwright
+          pip install -q pandas numpy requests openpyxl lxml selenium playwright yfinance
           python -m playwright install --with-deps chromium
       - name: Generar página
         run: python actualizar.py
