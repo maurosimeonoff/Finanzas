@@ -1,6 +1,13 @@
 name: Actualizar cartera global
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - actualizar.py
+      - activos.txt
+      - .github/workflows/actualizar.yml
   schedule:
     - cron: "0 21 * * *"      # 21:00 UTC = 18:00 en Buenos Aires (UTC-3, sin horario de verano)
   workflow_dispatch:           # también se puede lanzar a mano desde la pestaña Actions
