@@ -1,9 +1,45 @@
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 import actualizar as app
+
+
+class PreciosTests(unittest.TestCase):
+    def test_volumen_brk_suma_el_valor_negociado_de_las_clases_a_y_b(self):
+        fechas = pd.date_range("2026-01-01", periods=60)
+        activos = {
+            "SPY": (500, 1_000_000),
+            "QQQ": (500, 1_000_000),
+            "BRK-A": (750_000, 10),
+            "BRK-B": (500, 15_000),
+        }
+        df = pd.concat(
+            {
+                ticker: pd.DataFrame(
+                    {
+                        "Adj Close": np.full(60, precio),
+                        "Close": np.full(60, precio),
+                        "Volume": np.full(60, volumen),
+                    },
+                    index=fechas,
+                )
+                for ticker, (precio, volumen) in activos.items()
+            },
+            axis=1,
+        )
+
+        class FakeYFinance:
+            def download(self, *args, **kwargs):
+                return df
+
+        with patch.object(app, "_yf", return_value=FakeYFinance()):
+            precios = app.bajar_precios(app.BASE, app.NOMBRES_ETF, [])
+
+        self.assertEqual(precios["m"]["BRK-A"]["v"], 15)
+        self.assertNotIn("BRK-B", precios["a"])
 
 
 class ProcesamientoSpyTests(unittest.TestCase):
@@ -440,6 +476,47 @@ class ProcesamientoBrkTests(unittest.TestCase):
         self.assertAlmostEqual(out["pv"], (200_000_000_000 - 99_500_000_000 - 10_000_000_000) / 200_000_000_000 * 100)
         self.assertTrue(any(k.startswith("__BRK_SIN_TICKER_") for k in out["w"].index))
 
+    def test_capitalizacion_sin_unidad_no_toma_la_b_de_berkshire_como_billones(self):
+        cuerpo = self.cuerpo().replace(
+            "Berkshire Market Capitalization: $200 billion",
+            "Berkshire Market Capitalization: $200,000,000,000\n"
+            "Berkshire Cash as of November 1, 2026: $10 billion",
+        )
+        out = app.proc_brk([self.tabla()], cuerpo)
+
+        self.assertEqual(out["cap"], 200_000_000_000)
+        self.assertAlmostEqual(out["ef"], 5)
+        self.assertAlmostEqual(out["pv"], 45.25)
+
+    def test_formatea_capitalizacion_en_mil_millones_legibles(self):
+        self.assertEqual(
+            app.fmt_mil_millones(1_245_800_902_047),
+            "US$ 1,245.8 mil millones",
+        )
+
+    def test_extrae_variacion_trimestral_del_efectivo_bruto_y_neto(self):
+        cuerpo = self.cuerpo().replace(
+            "Berkshire Cash as of November 1, 2026: $10 billion",
+            "Berkshire Cash as of Sep 30, 2026: $10 billion "
+            "(Up 3.3% from Jun 30, 2026)",
+        ).replace(
+            "Excluding Rail Cash: $8 billion",
+            "Excluding Rail Cash and Subtracting T-Bills Payable: $9 billion "
+            "(Down 1.9% from Jun 30, 2026)",
+        )
+        out = app.proc_brk([self.tabla()], cuerpo)
+
+        self.assertEqual(out["fecha_efectivo"], "2026-09-30")
+        self.assertEqual(out["cash_neto"], 9_000_000_000)
+        self.assertEqual(out["cash_cambio"], 3.3)
+        self.assertEqual(out["cash_cambio_desde"], "2026-06-30")
+        self.assertEqual(out["cash_neto_cambio"], -1.9)
+        self.assertEqual(out["cash_neto_cambio_desde"], "2026-06-30")
+        self.assertEqual(
+            app.fmt_variacion(3.3, "2026-06-30"),
+            " · +3.3% vs. 30/06/2026",
+        )
+
     def test_rechaza_tabla_parcial_total_ausente_y_diferencia_material(self):
         incompleta = self.tabla().replace("<td>TOTAL</td>", "<td>SUMMARY</td>")
         with self.assertRaisesRegex(RuntimeError, "incompleta"):
@@ -557,7 +634,7 @@ class ConsolidacionTests(unittest.TestCase):
         ]
         _, listados, _ = app.armar(spy, qqq, brk, enlaces, "")
         self.assertEqual(len(listados), 2)
-        self.assertIn("Enlaces a negocios privados", app.HTML_T)
+        self.assertIn("Un enlace no implica una empresa única", app.HTML_T)
 
 
 if __name__ == "__main__":

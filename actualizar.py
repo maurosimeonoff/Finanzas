@@ -80,6 +80,9 @@ def iso(x):
     return None if pd.isna(t) else t.strftime("%Y-%m-%d")
 
 def dmy(s): return "s/d" if not s else datetime.strptime(s, "%Y-%m-%d").strftime("%d/%m/%Y")
+def fmt_mil_millones(valor): return f"US$ {valor / 1e9:,.1f} mil millones"
+def fmt_variacion(porcentaje, desde):
+    return f" · {porcentaje:+.1f}% vs. {dmy(desde)}" if porcentaje is not None and desde else " · variación trimestral s/d"
 def nk(x): return re.sub(r"[^a-z0-9]", "", str(x).lower())
 
 def col(df, claves):
@@ -717,7 +720,7 @@ def proc_brk(htmls, cuerpo):
     if len(firmas) > 1:
         raise RuntimeError("CNBC: se encontraron varias tablas completas de posiciones; la fuente es ambigua.")
     df, emp, total_cnbc, pub, dif_total = tablas[0]
-    UN = r"(trillion|billion|million|[TBM])"; esc = {"trillion": 1e12, "t": 1e12, "billion": 1e9, "b": 1e9, "million": 1e6, "m": 1e6}
+    UN = r"(trillion|billion|million|[TBM])(?![A-Za-z])"; esc = {"trillion": 1e12, "t": 1e12, "billion": 1e9, "b": 1e9, "million": 1e6, "m": 1e6}
     def diag():
         ls = [l.strip()[:140] for l in cuerpo.splitlines() if re.search(r"cash|capitali", l, re.I) and l.strip()][:8]
         return " Líneas halladas en la página: " + (" || ".join(ls) if ls else "ninguna con 'cash' o 'capitalization'") + "."
@@ -728,7 +731,15 @@ def proc_brk(htmls, cuerpo):
     if not fc: raise RuntimeError("no se pudo leer la fecha del efectivo bruto de Berkshire en CNBC.")
     mn = re.search(r"Excluding Rail Cash[^\$]*\$\s*([\d,]+(?:\.\d+)?)\s*" + UN, cuerpo, re.I)   # efectivo neto (sin BNSF, menos letras a pagar)
     cash_neto = float(mn.group(1).replace(",", "")) * esc[mn.group(2).lower()] if mn else None
-    m2 = re.search(r"Berkshire Market Capitali[sz]ation:?[^\$]{0,40}\$\s*([\d,]+(?:\.\d+)?)\s*(trillion|billion|million|[TBM])?", cuerpo, re.I)
+    def variacion(frase):
+        patron = re.escape(frase) + r"[^\$]*\$\s*[\d,]+(?:\.\d+)?\s*" + UN + r"\s*\(\s*(Up|Down)\s+([\d.]+)%\s+from\s+" + FMT_ASOF + r"\s*\)"
+        m = re.search(patron, cuerpo, re.I)
+        if not m: return None, None
+        pct = float(m.group(3)) * (-1 if m.group(2).lower() == "down" else 1)
+        return pct, iso(m.group(4))
+    cash_cambio, cash_cambio_desde = variacion("Berkshire Cash")
+    cash_neto_cambio, cash_neto_cambio_desde = variacion("Excluding Rail Cash")
+    m2 = re.search(r"Berkshire Market Capitali[sz]ation:?[^\$]{0,40}\$\s*([\d,]+(?:\.\d+)?)\s*(?:" + UN + r")?", cuerpo, re.I)
     if not m2: raise RuntimeError("no se pudo leer la capitalización de mercado de Berkshire en CNBC." + diag())
     cap = float(m2.group(1).replace(",", "")) * esc[(m2.group(2) or "").lower()] if m2.group(2) else float(m2.group(1).replace(",", ""))
     if cap < pub + cash: raise RuntimeError(f"inconsistencia: capitalización {cap:,.0f} < acciones {pub:,.0f} + efectivo {cash:,.0f}")
@@ -749,6 +760,8 @@ def proc_brk(htmls, cuerpo):
         raise RuntimeError("CNBC incluye Berkshire como posición propia; no puede descomponerse recursivamente sin doble conteo.")
     return dict(w=emp.groupby("T")["P"].sum(), n=emp.groupby("T")["Company"].first(), ef=cash / cap * 100, pv=(cap - pub - cash) / cap * 100,
                 fecha_efectivo=fc, f13=f13, f13p=f13p, exc=exc, cap=cap, pub=pub, cash=cash, cash_neto=cash_neto,
+                cash_cambio=cash_cambio, cash_cambio_desde=cash_cambio_desde,
+                cash_neto_cambio=cash_neto_cambio, cash_neto_cambio_desde=cash_neto_cambio_desde,
                 total_cnbc=total_cnbc, dif_total=dif_total, lineas=len(emp))
 
 def armar(S, Q, B, subs, subs_err):
@@ -809,11 +822,12 @@ def enteros(v):  # reparte 100 en enteros (método del mayor resto)
 
 def pagina(frag):  # envoltorio para publicar como página web independiente
     return ('<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>Cartera global: SPY + QQQ + BRK</title><style>body{margin:0;background:#1f1e1d;padding:18px 10px}</style></head><body>' + frag + '</body></html>')
+            '<title>Cartera global: SPY + QQQ + BRK</title><style>html,body{min-height:100%;margin:0}body{background:#1f1e1d;padding:0}</style></head><body>' + frag + '</body></html>')
 
-BASE = ["SPY", "QQQ", "BRK-A"]
+BASE = ["SPY", "QQQ", "BRK-A", "BRK-B"]
 ETFS_EXTRA = ["IWM", "EFA", "EEM", "TLT", "GLD", "VNQ"]
 NOMBRES_ETF = {"SPY": "State Street SPDR S&P 500 ETF Trust", "QQQ": "Invesco QQQ Trust, Series 1", "BRK-A": "Berkshire Hathaway Inc. (Clase A)",
+               "BRK-B": "Berkshire Hathaway Inc. (Clase B)",
                "IWM": "iShares Russell 2000 ETF", "EFA": "iShares MSCI EAFE ETF", "EEM": "iShares MSCI Emerging Markets ETF",
                "TLT": "iShares 20+ Year Treasury Bond ETF", "GLD": "SPDR Gold Shares", "VNQ": "Vanguard Real Estate ETF"}
 
@@ -842,7 +856,7 @@ def bajar_precios(tks, nombres, extras):  # precios ajustados diarios desde Yaho
         x = df[t]; p = (x["Adj Close"] if "Adj Close" in x else x["Close"]).dropna()
         p.index = pd.to_datetime(p.index).tz_localize(None).normalize(); p = p[~p.index.duplicated(keep="last")]
         return x, p[p > 0]
-    cal = serie("SPY")[1].index; A, M = {}, {}
+    cal = serie("SPY")[1].index; A, M, DV = {}, {}, {}
     for t in tks:
         if t not in cols: continue
         x, p = serie(t)
@@ -851,33 +865,44 @@ def bajar_precios(tks, nombres, extras):  # precios ajustados diarios desde Yaho
         i0 = int(np.argmax(s.notna().to_numpy()))
         v = s.iloc[i0:].dropna(); i0 = len(cal) - len(v)
         dv = (x["Close"] * x["Volume"]).dropna().tail(60).mean() / 1e6 if "Volume" in x else np.nan
+        DV[t] = float(dv) if np.isfinite(dv) else None
         nom, mon = nombres.get(t), "USD"
         if t in extras:                                           # símbolos agregados por el usuario: mejor esfuerzo para nombre y moneda
             try:
                 tk = yf.Ticker(t); mon = tk.fast_info["currency"] or "s/d"; nom = nom or tk.info.get("longName") or tk.info.get("shortName")
             except Exception: mon = "s/d"
-        A[t] = {"s": i0, "v": np.round(v.to_numpy(), 3).tolist()}
+        if t != "BRK-B" or t in extras:                           # BRK-B puede ser auxiliar para sumar el volumen de BRK-A
+            A[t] = {"s": i0, "v": np.round(v.to_numpy(), 3).tolist()}
         M[t] = {"n": nom or t, "c": mon, "v": None if not np.isfinite(dv) else round(float(dv), 0), "w": "índice de precios: no incluye dividendos" if t.startswith("^") else ""}
+    if "BRK-A" in M:
+        va, vb = DV.get("BRK-A"), DV.get("BRK-B")
+        M["BRK-A"]["v"] = round(va + vb, 0) if va is not None and vb is not None else None
     return {"f": [d.strftime("%Y-%m-%d") for d in cal], "a": A, "m": M}
 
 # ---------- salida ----------
 HTML_T = r'''
 <style>
-#w{--bg:#262624;--sf:#30302e;--bd:#3d3d3a;--tx:#faf9f5;--t2:#c2c0b6;--t3:#9a988f;--ac:#d97757;color-scheme:dark;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--tx);background:var(--bg);padding:18px 22px 14px;box-sizing:border-box;width:100%;max-width:1500px;margin:0 auto;border-radius:14px}
+#w{--bg:#262624;--sf:#30302e;--bd:#3d3d3a;--tx:#faf9f5;--t2:#c2c0b6;--t3:#9a988f;--ac:#d97757;color-scheme:dark;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--tx);background:var(--bg);padding:12px;box-sizing:border-box;width:100%;min-height:100vh;margin:0;display:grid;grid-template-columns:168px minmax(0,1fr);gap:12px}
 #w *{box-sizing:border-box}
+#w .nav{position:sticky;top:12px;align-self:start;height:calc(100vh - 24px);display:flex;flex-direction:column;gap:6px;padding:10px;background:var(--sf);border:1px solid var(--bd);border-radius:12px}
+#w .brand{font:500 19px/1.2 "Iowan Old Style","Palatino Linotype",Georgia,serif;padding:5px 8px 14px;color:var(--tx)}
+#w .nav button{width:100%;padding:10px 9px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--t2);font:600 13px Inter,system-ui,sans-serif;text-align:left;cursor:pointer}
+#w .nav button:hover{border-color:var(--bd);color:var(--tx)}
+#w .nav button.on{background:var(--ac);color:#1f1e1d;border-color:var(--ac)}
+#w .pages{min-width:0}
+#w .view{min-width:0}
 #w h1{font:500 27px/1.15 "Iowan Old Style","Palatino Linotype",Georgia,"Times New Roman",serif;margin:0 0 4px;letter-spacing:-.3px;color:var(--tx)!important}
 #w h2{font-size:12px;margin:22px 0 8px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--t3)!important}
 #w .sub{font-size:12.5px;color:var(--t3);margin-bottom:12px}
-.ctl{display:flex;gap:22px;align-items:center;flex-wrap:wrap;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:10px 16px}
+.ctl{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:9px 12px}
 .ctl .it{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:650}
 .ctl input[type=range]{width:160px;accent-color:var(--ac)}
 .ctl input[type=number]{width:58px;padding:4px 6px;border:1px solid var(--bd);border-radius:7px;font-size:13px;background:#1f1e1d!important;color:var(--tx)!important}
 .ctl button{font-size:12px;border:1px solid var(--bd);background:var(--bg)!important;color:var(--t2)!important;border-radius:7px;padding:5px 12px;cursor:pointer}
 .ctl button:hover{border-color:var(--ac);color:var(--tx)!important}
-.gr{display:grid;grid-template-columns:minmax(200px,23%) minmax(0,1fr) minmax(280px,31%);gap:10px;margin-top:14px;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:14px 10px 8px}
+.gr{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(320px,1.4fr) minmax(250px,1fr);gap:8px;margin-top:10px;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:10px 8px 6px}
 .gr h3{font:500 16px/1.2 "Iowan Old Style","Palatino Linotype",Georgia,serif;margin:0;text-align:center;color:var(--tx)!important}
 .gr p{font-size:12px;color:var(--t3);margin:2px 0 0;text-align:center}
-@media(max-width:980px){.gr{grid-template-columns:1fr}}
 .g2{display:grid;grid-template-columns:1fr 1.4fr;gap:26px}@media(max-width:980px){.g2{grid-template-columns:1fr}}
 #w table{border-collapse:collapse;width:100%;font-size:12px;font-variant-numeric:tabular-nums;background:transparent;color:var(--tx)}
 #w th{text-align:right;padding:6px 8px;border-bottom:1px solid var(--ac);background:var(--bg);position:sticky;top:0;font-weight:650;color:var(--tx)}
@@ -891,9 +916,6 @@ HTML_T = r'''
 .S{color:#6FA3DB}.Q{color:#F5973A}.B{color:#6CBF6A}.S,.Q,.B{font-weight:650}
 details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;margin:22px 0 8px;color:var(--t3)}details>summary:hover{color:var(--tx)}
 
-.tabs{display:flex;gap:8px;margin:0 0 16px}
-.tabs button{font:600 13px Inter,system-ui,sans-serif;padding:7px 18px;border-radius:999px;border:1px solid var(--bd);background:transparent!important;color:var(--t2)!important;cursor:pointer}
-.tabs button.on{background:var(--ac)!important;border-color:var(--ac);color:#1f1e1d!important}
 .ctl select{background:#1f1e1d!important;color:var(--tx)!important;border:1px solid var(--bd);border-radius:7px;padding:4px 6px;font-size:12.5px;max-width:190px}
 .ctl label.it{font-weight:600;color:var(--t2)}
 .chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:650;padding:4px 11px;border:1px solid var(--bd);border-radius:999px;cursor:pointer;margin-right:6px}
@@ -901,14 +923,27 @@ details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06
 .cmp{display:grid;grid-template-columns:fit-content(58%) minmax(0,1fr);gap:14px;margin-top:14px}@media(max-width:1100px){.cmp{grid-template-columns:1fr}}
 .cmp>div{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:10px 12px;overflow:auto}
 #w .cmp th,#w .cmp td{white-space:nowrap}#w .cmp td:first-child,#w .cmp th:first-child{text-align:left}
-.mt{border:1px solid var(--bd);border-radius:12px;padding:6px 18px 14px;background:var(--sf);font-size:12.5px;line-height:1.6;color:var(--t2)}
-.mt h4{margin:18px 0 6px;padding-top:12px;border-top:1px solid var(--bd);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--ac);font-weight:650}.mt h4:first-child{border-top:0;padding-top:4px}
-.mt ol,.mt ul{margin:4px 0 0;padding-left:20px}.mt li{margin:3px 0}.mt b{color:var(--tx)}
-#w details>div.sb{margin-top:6px}
+.method-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.mt{min-width:0;border:1px solid var(--bd);border-radius:10px;padding:9px 12px;background:var(--sf);font-size:11.5px;line-height:1.35;color:var(--t2)}
+.mt h4{margin:0 0 6px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ac);font-weight:650}
+.mt ol,.mt ul{margin:0;padding-left:17px}.mt li{margin:2px 0}.mt b{color:var(--tx)}
+.mt td,.mt th{padding:3px 5px!important;font-size:10.5px}#w .mt th{position:static}
+.method-grid .mt:last-child{grid-column:1/-1}
+.method-grid .mt:last-child ul{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:20px}
+@media(max-width:1180px){.gr{grid-template-columns:minmax(180px,.8fr) minmax(0,1.4fr)}.gr>div:nth-child(3){grid-column:1/-1}}
+@media(max-width:900px){#w{grid-template-columns:132px minmax(0,1fr);gap:8px;padding:8px}.method-grid{grid-template-columns:1fr}.method-grid .mt:last-child{grid-column:auto}.method-grid .mt:last-child ul{grid-template-columns:1fr}}
+@media(max-width:680px){#w{grid-template-columns:104px minmax(0,1fr);gap:6px;padding:6px}#w .nav{padding:6px;gap:4px}#w .brand{font-size:16px;padding:5px 4px 10px}#w .nav button{font-size:11px;padding:8px 6px}.gr{grid-template-columns:1fr}.gr>div:nth-child(3){grid-column:auto}.ctl{gap:7px;padding:8px}.ctl input[type=range]{width:90px}.method-grid .mt:last-child ul{grid-template-columns:1fr}}
 </style>
 <div id="w">
-<div class="tabs"><button id="tb1" class="on">Cartera global</button><button id="tb2">Comparativa cuantitativa</button></div>
-<section id="p1">
+<aside class="nav" aria-label="Secciones de la cartera">
+ <div class="brand">Finanzas</div>
+ <button id="nav1" class="on">Global</button>
+ <button id="nav2">Comparativa</button>
+ <button id="nav3">Metodología</button>
+ <button id="nav4">Privados</button>
+</aside>
+<main class="pages">
+<section id="p1" class="view">
 <h1 id="tt"></h1><div class="sub" id="st"></div>
 <div class="ctl">
  <div class="it S">SPY <input id="rS" type="range" min="0" max="100" step="1"><input id="nS" type="number" min="0" max="100" step="1">%</div>
@@ -922,17 +957,9 @@ details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06
  <div><h3>Composición final consolidada</h3><p id="s3"></p><div id="g3"></div></div>
 </div>
 <details id="dt"><summary>Tabla completa de la cartera global</summary><div class="sc"><table class="tf" id="tf"></table></div></details>
-<details id="dm"><summary>Metodología</summary><div class="mt">
- <h4>1 · Reconciliación de la cartera</h4><table class="kp" id="kp"></table>
- <h4>2 · Fuentes y fechas de los datos</h4><table class="kp">__FECHAS__</table>
- <h4>3 · Criterios de cálculo</h4>__CRITERIOS__
- <h4>4 · Controles y salvedades</h4>__SALVEDADES__
- <h4>5 · Comparativa cuantitativa</h4>__COMPARATIVA__
-</div></details>
-<details><summary>Enlaces a negocios privados de Berkshire Hathaway: __NSUBS__</summary><div class="sb">__SUBS__</div></details>
 </section>
-<section id="p2" style="display:none">
-<h1>Comparativa cuantitativa</h1><div class="sub" id="cs"></div>
+<section id="p2" class="view" style="display:none">
+<h1>Comparativa</h1><div class="sub" id="cs"></div>
 <div class="ctl" id="cc">
  <span id="chips"></span>
  <label class="it">Otro <select id="cx"></select></label>
@@ -943,6 +970,22 @@ details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06
 <div class="cmp" id="cmp"><div><h2 style="margin-top:2px">Estadísticos</h2><table id="ct"></table><div class="sub" id="cd" style="margin-top:8px"></div></div><div><div id="cch"></div></div></div>
 <div class="nt" id="cf"></div>
 </section>
+<section id="p3" class="view" style="display:none">
+<h1>Metodología</h1>
+<div class="method-grid">
+ <div class="mt"><h4>1 · Reconciliación</h4><table class="kp" id="kp"></table></div>
+ <div class="mt"><h4>2 · Fuentes y fechas</h4><table class="kp">__FECHAS__</table></div>
+ <div class="mt"><h4>3 · Criterios de cálculo</h4>__CRITERIOS__</div>
+ <div class="mt"><h4>4 · Controles y salvedades</h4>__SALVEDADES__</div>
+ <div class="mt"><h4>5 · Comparativa cuantitativa</h4>__COMPARATIVA__</div>
+</div>
+</section>
+<section id="p4" class="view" style="display:none">
+<h1>Privados</h1>
+<div class="sub">Enlaces públicos a negocios y subsidiarias de Berkshire. Un enlace no implica una empresa única.</div>
+<div class="sb">__SUBS__</div>
+</section>
+</main>
 </div>
 
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
@@ -1014,8 +1057,23 @@ $('dt').ontoggle=render;
 
 // ---------------- comparativa cuantitativa ----------------
 const CP={CG:'#D97757',SPY:'#6FA3DB',QQQ:'#F5973A','BRK-A':'#6CBF6A'},LB={CG:'Cartera global',SPY:'SPY',QQQ:'QQQ','BRK-A':'BRK'},OB=['CG','SPY','QQQ','BRK-A'];
+const DIRECCION_DELTA={tot:1,ann:1,vol:-1,dsd:-1,mdd:1,dist:1,rr:1};
+const DIRECCION_VALOR={tot:1,ann:1,vol:-1,dsd:-1,mdd:1,dist:1,rr:1,vm:1};
+const TONO_RANK={mejor:'rgba(108,191,106,.22)',medio:'rgba(230,200,79,.18)',peor:'rgba(232,112,106,.22)'};
 let tab=1,cmpOK=false,C={chk:{CG:1,SPY:1,QQQ:1,'BRK-A':1},x:M.otro||'',dA:'CG',dB:'SPY'},lgx=false,ca=0,cb=0,busy=false,bound=false,N=0,TS=[],MO=[];const cache={};
 const colK=k=>CP[k]||'#B79CED',nmK=k=>LB[k]||k;
+const colorDelta=(k,delta,d)=>{const visible=Number(delta.toFixed(d))*DIRECCION_DELTA[k];return visible>0?'#6CBF6A':visible<0?'#E8706A':'#9a988f';};
+function puntajeFila(k,v){
+  if(k==='cor')return-Math.abs(v);                 // menor correlación absoluta = más diversificación
+  if(k==='beta')return-Math.abs(v-1);              // beta más próxima a 1
+  return DIRECCION_VALOR[k]===undefined?NaN:v*DIRECCION_VALOR[k];
+}
+function coloresFila(k,valores,d){
+  const puntos=valores.map(v=>v===null||v===undefined||!Number.isFinite(Number(v))?NaN:puntajeFila(k,Number(Number(v).toFixed(d))));
+  const validos=puntos.filter(Number.isFinite),mejor=Math.max(...validos),peor=Math.min(...validos);
+  if(validos.length<2||mejor===peor)return puntos.map(()=>'');
+  return puntos.map(v=>!Number.isFinite(v)?'':v===mejor?TONO_RANK.mejor:v===peor?TONO_RANK.peor:TONO_RANK.medio);
+}
 function fin(o){return o;}
 function ser(k){
   if(cache[k])return cache[k];const o=PX.a[k];if(!o)return null;
@@ -1084,14 +1142,18 @@ function drawC(){
   $('cs').textContent='Rango analizado: '+fd(a2)+' a '+fd(cb)+' · '+(st.dias/365.25).toFixed(1)+' años · '+st.n+' ruedas';
   const R=[['Retorno total (punta a punta)','tot',0,'%',1],['Rendimiento anual','ann',1,'%',1],['Volatilidad anual','vol',1,'%',1],['Volatilidad negativa anual','dsd',1,'%',1],
     ['Máxima caída del rango','mdd',0,'%',1],['Distancia al máximo del rango','dist',1,'%',1],['Rendimiento anual / volatilidad','rr',2,'',1],
-    ['Correlación diaria frente a '+nmK(ref),'cor',2,'',0],['Beta frente a '+nmK(ref),'beta',2,'',0],['Volumen diario promedio, 3 meses (millones)','vm',0,'',0]];
+    ['Correlación diaria frente a '+nmK(ref),'cor',2,'',0],['Beta frente a '+nmK(ref),'beta',2,'',0],['Valor negociado diario promedio, 3 meses (millones)','vm',0,'',0]];
+  const monedas=keys.filter(k=>k!=='CG').map(k=>(PX.m[k]||{}).c||'s/d'),volumenComparable=monedas.length>0&&monedas[0]!=='s/d'&&monedas.every(m=>m===monedas[0]);
   let h='<tr><th></th>'+keys.map(k=>'<th style="color:'+colK(k)+'">'+nmK(k)+'</th>').join('')+'<th>Δ</th></tr>';
   for(const [l,k,d,u,dl] of R){
-    h+='<tr><td>'+l+'</td>'+keys.map(x=>{const v=res[x][k];return '<td>'+(k==='vm'&&(v===null||v===undefined)?'—':(k==='vm'?String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g,'\u202f'):fm(v,d,u)))+'</td>';}).join('')+
-      '<td><b>'+(dl?fm(res[C.dA][k]-res[C.dB][k],d,u,true):'')+'</b></td></tr>';}
-  $('ct').innerHTML=h;$('cd').textContent='Δ = '+nmK(C.dA)+' menos '+nmK(C.dB);
+    const colores=k==='vm'&&!volumenComparable?keys.map(()=>''):coloresFila(k,keys.map(x=>res[x][k]),d);
+    h+='<tr><td>'+l+'</td>'+keys.map((x,i)=>{const v=res[x][k],estilo=colores[i]?' style="background-color:'+colores[i]+'"':'';return '<td'+estilo+'>'+(k==='vm'&&(v===null||v===undefined)?'—':(k==='vm'?String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g,'\u202f'):fm(v,d,u)))+'</td>';}).join('');
+    const delta=dl?res[C.dA][k]-res[C.dB][k]:0,estilo=dl?' style="color:'+colorDelta(k,delta,d)+'"':'';
+    h+='<td><b'+estilo+'>'+(dl?fm(delta,d,u,true):'')+'</b></td></tr>';
+  }
+  $('ct').innerHTML=h;$('cd').textContent='Δ = '+nmK(C.dA)+' menos '+nmK(C.dB)+' · Verde: mejor; amarillo: intermedio; rojo: peor entre los activos elegidos. Correlación: menor |valor|; beta: más cerca de 1; valor negociado: mayor liquidez (si coincide la moneda).';
   $('cf').innerHTML='<div>'+keys.map(k=>'<b style="color:'+colK(k)+'">'+nmK(k)+'</b>: '+(k==='CG'?'SPY '+w.S+'% · QQQ '+w.Q+'% · BRK '+w.B+'%, rebalanceo trimestral sin fricciones':((PX.m[k]||{}).n||k)+' · '+((PX.m[k]||{}).c||'s/d'))).join(' &nbsp;|&nbsp; ')+'</div>'+
-    '<div>Precios ajustados por dividendos y splits (retorno total). Fuente: Yahoo Finance, actualizada todos los días a las 18:00. Volumen: promedio de las últimas 60 ruedas en moneda de cotización.</div>'+
+    '<div>Precios ajustados por dividendos y splits (retorno total). Fuente: Yahoo Finance, actualizada todos los días a las 18:00. Valor negociado: promedio de las últimas 60 ruedas en moneda de cotización; para BRK se suman los montos de las clases A y B.</div>'+
     keys.filter(k=>(PX.m[k]||{}).w).map(k=>'<div class="w">Aviso: '+nmK(k)+' es un '+PX.m[k].w+'</div>').join('')+
     (new Set(keys.filter(k=>k!=='CG').map(k=>(PX.m[k]||{}).c)).size>1?'<div class="w">Aviso: monedas distintas entre los activos elegidos; la comparación mezcla efecto cambiario.</div>':'');
   const ys=[],ds=[];let lo=Infinity,hi=-Infinity,mn=0;
@@ -1119,11 +1181,11 @@ function drawC(){
       const r=full?[0,N-1]:idx(x0,x1);if(r[1]-r[0]<5)return;ca=r[0];cb=r[1];drawC();});}});
 }
 function show(n){
-  tab=n;$('p1').style.display=n===1?'':'none';$('p2').style.display=n===2?'':'none';$('tb1').className=n===1?'on':'';$('tb2').className=n===2?'on':'';
+  tab=n;for(let i=1;i<=4;i++){$('p'+i).style.display=i===n?'':'none';$('nav'+i).className=i===n?'on':'';}
   if(n===2){if(!cmpOK)initC();else drawC();setTimeout(()=>{try{Plotly.Plots.resize('cch')}catch(e){}},30);}
-  else{render();setTimeout(()=>['g1','g2','g3'].forEach(i=>{try{Plotly.Plots.resize(i)}catch(e){}}),30);}
+  else if(n===1){render();setTimeout(()=>['g1','g2','g3'].forEach(i=>{try{Plotly.Plots.resize(i)}catch(e){}}),30);}
 }
-$('tb1').onclick=()=>show(1);$('tb2').onclick=()=>show(2);
+$('nav1').onclick=()=>show(1);$('nav2').onclick=()=>show(2);$('nav3').onclick=()=>show(3);$('nav4').onclick=()=>show(4);
 sync();render();
 })();
 </script>
@@ -1151,22 +1213,22 @@ async def construir():
     fechas = (fila("SPY · State Street", dmy(S["fecha"]) + ant(S["fecha"], 4), "Posiciones diarias oficiales") +
               fila("QQQ · Invesco", dmy(Q["fecha"]) + ant(Q["fecha"], 4), "Fecha efectiva informada por la fuente") +
               fila("BRK · acciones", f'cantidades al {dmy(B["f13"])} (13F presentado el {dmy(B["f13p"])}), valuadas al cierre del {dmy(cierre)}', ("Excepciones de fecha: " + exc) if exc else "Valor de mercado vigente según CNBC") +
-              fila("BRK · efectivo", dmy(B["fecha_efectivo"]) + ant(B["fecha_efectivo"]), "Efectivo y letras del Tesoro del último balance trimestral") +
-              fila("BRK · capitalización", f'{dmy(cierre)} (último cierre hábil)', f'US$ {B["cap"]/1e9:.0f} mil millones') +
+              fila("BRK · efectivo bruto", dmy(B["fecha_efectivo"]) + ant(B["fecha_efectivo"]),
+                   fmt_mil_millones(B["cash"]) + fmt_variacion(B["cash_cambio"], B["cash_cambio_desde"]) + " · incluye Rail; usado en el desglose") +
+              fila("BRK · efectivo neto", dmy(B["fecha_efectivo"]),
+                   (fmt_mil_millones(B["cash_neto"]) if B["cash_neto"] is not None else "s/d") +
+                   fmt_variacion(B["cash_neto_cambio"], B["cash_neto_cambio_desde"]) + " · excluye Rail y resta T-Bills a pagar") +
+              fila("BRK · capitalización", f'{dmy(cierre)} (último cierre hábil)', fmt_mil_millones(B["cap"])) +
               fila("Precios de la comparativa", "Yahoo Finance · ajustados", "Descarga diaria completa; la fecha de consulta figura arriba"))
     subs_h = "".join(f'<div>{i+1}. <a href="{u}" target="_blank">{n}</a></div>' for i, (n, u) in enumerate(subs)) or f'<div class="w">No se pudo leer el listado ({raw["subs_err"] or "vacío"}).</div>'
     dif = B["dif_total"]
     ctrl = f"<li><b>Control contra CNBC:</b> posiciones capturadas US$ {B['pub']/1e9:.1f} mil millones; TOTAL US$ {B['total_cnbc']/1e9:.1f} mil millones; diferencia {dif:.2f}% (tolerancia máxima {TOL_TOTAL_BRK:.1f}%).</li>"
-    neto = f" El neto (sin el efectivo de BNSF y descontando letras del Tesoro a pagar) es US$ {B['cash_neto']/1e9:.1f} mil millones." if B["cash_neto"] else ""
-    criterios = ("<ol><li><b>Fuentes.</b> Tres consultas independientes: SPY (archivo diario de State Street), QQQ (posiciones de Invesco) y BRK (CNBC).</li>"
-        "<li><b>Aporte.</b> Ponderación del activo dentro de su fuente × asignación de esa fuente.</li>"
-        "<li><b>BRK dentro de SPY.</b> Esa posición se reemplaza por la composición de BRK y se suma a la asignación directa de BRK, sin doble conteo.</li>"
-        "<li><b>Doble clase.</b> Las acciones con más de una clase (Alphabet, Lennar, Fox, News Corp) se consolidan por símbolo.</li>"
-        f"<li><b>Integridad de las fuentes.</b> SPY y QQQ no se reescalan: brechas de hasta {TOL_FUENTE:.1f}% quedan explícitas como brecha de fuente sin asignar; una brecha mayor o una suma superior a 100% bloquea la cartera. Excepción: si la fuente identifica efectivo o dividendos pendientes, informa su valor de mercado pero omite el %TNA, se calcula ese peso y se ajustan proporcionalmente los restantes.</li>"
-        "<li><b>Efectivo e instrumentos de QQQ.</b> Solo efectivo disponible identificado se agrupa como Efectivo; futuros, garantías, colaterales, dividendos pendientes, divisas y posiciones sin clasificar se muestran por separado.</li>"
-        "<li><b>Residual de BRK.</b> Capitalización − acciones − efectivo: residual de mercado implícito, no una valuación de los negocios privados.</li>"
-        "<li><b>Gráficos.</b> Los 10 primeros incluyen siempre Efectivo y Residual de BRK; el resto se agrupa.</li>"
-        "<li><b>Selector.</b> Enteros que suman 100: SPY reparte entre QQQ y BRK; QQQ solo mueve a BRK; BRK reparte entre SPY y QQQ.</li></ol>")
+    criterios = ("<ul><li><b>Aporte:</b> peso en la fuente × asignación de esa fuente.</li>"
+        "<li><b>BRK en SPY:</b> se sustituye por la composición de BRK y se suma al aporte directo, sin doble conteo.</li>"
+        "<li><b>Tickers:</b> clases conocidas se consolidan; sufijos de mercados extranjeros se conservan.</li>"
+        "<li><b>QQQ:</b> solo efectivo identificado va a Efectivo; futuros, garantías, colaterales, dividendos pendientes, divisas y desconocidos quedan separados.</li>"
+        "<li><b>Residual BRK:</b> capitalización − posiciones públicas − efectivo bruto; es implícito, no una valuación de privados.</li>"
+        "<li><b>Vista:</b> gráficos muestran los 10 principales e incluyen Efectivo y Residual; los selectores siempre suman 100.</li></ul>")
     alertas = []
     if gap["S"] > 1e-6: alertas.append(f"<li><b>SPY:</b> {gap['S']:.2f}% quedó explícito como brecha de fuente sin asignar.</li>")
     if gap["Q"] > 1e-6: alertas.append(f"<li><b>QQQ:</b> {gap['Q']:.2f}% quedó explícito como brecha de fuente sin asignar.</li>")
@@ -1174,24 +1236,23 @@ async def construir():
     if gap["desconocido"] > 0: alertas.append(f"<li><b>QQQ:</b> {gap['desconocido']:.2f}% corresponde a posiciones sin clasificar; se conserva aparte del efectivo.</li>")
     if gap["sin_tna_S"] > 0: alertas.append(f"<li><b>SPY:</b> {gap['sin_tna_S']:.4f}% de efectivo o dividendos pendientes se ponderó desde el valor de mercado porque la fuente no informó %TNA; las demás ponderaciones se ajustaron proporcionalmente.</li>")
     if gap["sin_tna_Q"] > 0: alertas.append(f"<li><b>QQQ:</b> {gap['sin_tna_Q']:.4f}% de dividendos pendientes sin %TNA se ponderó desde el valor de mercado y se mantiene por separado de efectivo y colaterales; las demás ponderaciones se ajustaron proporcionalmente.</li>")
-    salvedades = (f"<ul><li><b>Efectivo bruto consolidado de BRK:</b> US$ {B['cash']/1e9:.1f} mil millones según CNBC (incluye el efectivo de BNSF).{neto}</li>"
-        "<li><b>Desfasaje temporal:</b> el efectivo corresponde al último balance trimestral y las acciones se valúan a precio de mercado del último cierre hábil, por lo que Residual de BRK absorbe esa diferencia.</li>"
-        "<li><b>Cierre hábil:</b> si se consulta en fin de semana se toma el viernes; no se consideran feriados de EE.UU.</li>"
-        "<li><b>Posiciones aproximadas:</b> Bending Spoons es una aproximación según CNBC y las acciones japonesas figuran con su propia fecha.</li>"
+    salvedades = ("<ul><li><b>Efectivo BRK:</b> el desglose usa el bruto consolidado (incluye Rail); el neto sin Rail y menos T-Bills a pagar es informativo.</li>"
+        "<li><b>Fechas BRK:</b> efectivo del último balance y acciones al último cierre; el residual absorbe el desfase.</li>"
+        "<li>En fin de semana se usa el viernes; no se ajustan feriados de EE.UU.</li>"
+        "<li>Bending Spoons es aproximado según CNBC; posiciones japonesas tienen fecha propia.</li>"
         f"{ctrl}{''.join(alertas)}<li><b>Sin respaldo estático:</b> si una fuente falla, el programa informa cuál; nunca completa con datos inventados.</li></ul>{aviso}")
-    comparativa = ("<ul><li><b>Precios:</b> siempre ajustados por dividendos y splits, de modo que el rendimiento es retorno total.</li>"
-        "<li><b>Cartera global:</b> SPY, QQQ y BRK con los pesos del selector, rebalanceados el primer día hábil de enero, abril, julio y octubre, sin costos ni impuestos.</li>"
-        "<li><b>Retorno total:</b> variación punta a punta del rango. <b>Rendimiento anual:</b> compuesto, con días corridos / 365.25.</li>"
-        "<li><b>Volatilidad:</b> desvío de los retornos diarios × raíz de las ruedas por año del rango. <b>Negativa:</b> solo retornos bajo cero.</li>"
-        "<li><b>Máxima caída y distancia al máximo:</b> medidas dentro del rango analizado (el pico es el máximo del propio rango, rebasado al inicio de la ventana). <b>Rendimiento / volatilidad:</b> sin tasa libre de riesgo.</li>"
-        "<li><b>Correlación y beta:</b> frente al segundo activo del Δ. <b>Volumen:</b> promedio de 60 ruedas en moneda de cotización.</li>"
-        "<li><b>Δ:</b> primer activo menos segundo, con el mismo formato de cada fila.</li>"
-        "<li><b>Otros símbolos:</b> la página es estática y no consulta Yahoo: el selector ofrece el catálogo descargado a las 18:00 (20 mayores posiciones y ETF de referencia); cualquier otro símbolo se consulta en Colab con el parámetro Otro_activo.</li>"
-        "<li><b>BRK-A y BRK-B:</b> 1 acción A equivale a 1.500 acciones B (la A se convierte en B, no al revés); la B tiene 1/1.500 de los derechos económicos y 1/10.000 del voto. La cartera consolida por valor económico; la comparativa usa BRK-A (más historia) y su retorno % es el de la B. Fuente: berkshirehathaway.com/compab.pdf.</li></ul>")
+    comparativa = ("<ul><li>Precios ajustados por dividendos y splits; se mide retorno total.</li>"
+        "<li>La cartera global rebalancea trimestralmente (enero, abril, julio y octubre), sin costos ni impuestos.</li>"
+        "<li>Retorno anual compuesto por días corridos; volatilidad diaria anualizada. La negativa usa solo ruedas bajo cero.</li>"
+        "<li>Caída máxima y distancia al máximo se miden dentro del período elegido; rendimiento/volatilidad no resta tasa libre de riesgo.</li>"
+        "<li>Correlación y beta usan como referencia el segundo activo de Δ; Δ = primero − segundo.</li>"
+        "<li>Valor negociado = promedio de 60 ruedas en moneda de cotización; BRK suma las clases A y B.</li>"
+        "<li>La página usa precios descargados una vez al día; otros símbolos se agregan en Colab mediante Otro_activo.</li>"
+        "<li>Una acción BRK-A equivale a 1.500 BRK-B; la cartera consolida por valor económico. La comparativa usa BRK-A y su retorno representa el de BRK-B.</li></ul>")
     meta = dict(w=w, consulta=AHORA.strftime("%d/%m/%Y %H:%M") + " (hora de Buenos Aires)", otro=(Otro_activo or "").strip().upper())
     j = lambda o: json.dumps(o, separators=(",", ":"), ensure_ascii=False).replace("</", "<\\/")
     return (HTML_T.replace("__DATA__", j(D)).replace("__META__", j(meta)).replace("__PX__", j(PX)).replace("__FECHAS__", fechas).replace("__CRITERIOS__", criterios)
-            .replace("__SALVEDADES__", salvedades).replace("__COMPARATIVA__", comparativa).replace("__SUBS__", subs_h).replace("__NSUBS__", str(len(subs))))
+            .replace("__SALVEDADES__", salvedades).replace("__COMPARATIVA__", comparativa).replace("__SUBS__", subs_h))
 
 # ---------- EJECUCIÓN ----------
 EN_COLAB = "google.colab" in sys.modules
