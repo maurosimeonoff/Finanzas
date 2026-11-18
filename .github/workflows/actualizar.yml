@@ -30,7 +30,7 @@ jobs:
           python-version: "3.11"
       - name: Dependencias
         run: |
-          pip install -q pandas numpy requests openpyxl lxml selenium playwright yfinance
+          pip install -q pandas numpy requests openpyxl lxml pypdf selenium playwright yfinance
           python -m playwright install --with-deps chromium
       - name: Generar página
         run: python actualizar.py
