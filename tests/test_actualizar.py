@@ -425,6 +425,25 @@ class ProcesamientoBrkTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "incompleta"):
             app.proc_brk([parcial], self.cuerpo())
 
+        sin_nombre = self.tabla(posiciones=[["", "AAPL", 99_500_000_000]])
+        with self.assertRaisesRegex(RuntimeError, "sin nombre de posición"):
+            app.proc_brk([sin_nombre], self.cuerpo())
+
+    def test_excluye_metadatos_que_cnbc_agrega_despues_de_total(self):
+        tabla = self.tabla().replace(
+            "</table>",
+            '<tr><td></td><td>Berkshire Market Capitalization:</td><td>$200 billion</td></tr>'
+            '<tr><td>Berkshire Cash as of November 1, 2026:</td><td></td><td></td></tr>'
+            '<tr><td>$10 billion (Up 3% from prior quarter)</td><td></td><td></td></tr>'
+            '<tr><td>Excluding Rail Cash:</td><td></td><td></td></tr>'
+            '<tr><td>$8 billion</td><td></td><td></td></tr></table>',
+        )
+        out = app.proc_brk([tabla], self.cuerpo())
+
+        self.assertAlmostEqual(out["dif_total"], 0.5)
+        self.assertEqual(out["pub"], 99_500_000_000)
+        self.assertEqual(out["lineas"], 3)
+
     def test_rechaza_tickers_duplicados_y_valores_negativos(self):
         duplicada = self.tabla(
             total=100,
