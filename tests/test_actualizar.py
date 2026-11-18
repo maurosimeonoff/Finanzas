@@ -927,6 +927,51 @@ class ResultadosBrkTests(unittest.TestCase):
 
 
 class SubsidiariasTests(unittest.TestCase):
+    def test_navegador_respalda_http_403_y_exige_directorio_completo(self):
+        enlaces = "".join(
+            f'<a href="https://example.com/{i}">Negocio {i}</a>'
+            for i in range(app.SUBS_MIN_ENLACES)
+        )
+        html = (
+            "<html><head><title>LINKS TO BERKSHIRE HATHAWAY SUB. COMPANIES</title></head>"
+            f"<body>{enlaces}</body></html>"
+        )
+
+        class Response:
+            def __init__(self, status):
+                self.status = status
+
+        class Page:
+            def __init__(self):
+                self.url = app.URL_SUBS
+                self.statuses = iter((403, 200))
+
+            async def goto(self, *args, **kwargs):
+                return Response(next(self.statuses))
+
+            async def content(self):
+                return html
+
+            async def wait_for_timeout(self, _):
+                pass
+
+        class Context:
+            async def new_page(self):
+                return page
+
+            async def close(self):
+                pass
+
+        class Browser:
+            async def new_context(self, **_):
+                return Context()
+
+        page = Page()
+        with patch.object(app, "descargar_subsidiarias", side_effect=RuntimeError("HTTP 403")):
+            resultado = asyncio.run(app.subs_web(Browser()))
+
+        self.assertEqual(len(resultado), app.SUBS_MIN_ENLACES)
+
     def test_descarga_reintenta_403_y_usa_el_host_oficial_con_www(self):
         enlaces = "".join(
             f'<a href="https://example.com/{i}">Negocio {i}</a>'
