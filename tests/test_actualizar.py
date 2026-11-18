@@ -1,3 +1,7 @@
+import json
+import asyncio
+import shutil
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -448,6 +452,123 @@ class ProcesamientoQqqTests(unittest.TestCase):
         sleep.assert_called_once_with(2)
 
 
+class CNBCWebTests(unittest.TestCase):
+    def test_recarga_hasta_capturar_la_tabla_completa_en_el_mismo_contexto(self):
+        class Locator:
+            async def click(self, **kwargs):
+                return None
+
+            async def evaluate_all(self, _script):
+                return ["<table><tr><td>TOTAL</td></tr></table>"]
+
+            async def inner_text(self):
+                return "Berkshire Cash and Market Capitalization"
+
+        class Mouse:
+            async def wheel(self, *_args):
+                return None
+
+        class Page:
+            def __init__(self):
+                self.reloads = 0
+                self.waits = 0
+                self.mouse = Mouse()
+
+            async def goto(self, *_args, **_kwargs):
+                return None
+
+            async def reload(self, **_kwargs):
+                self.reloads += 1
+
+            async def wait_for_selector(self, *_args, **_kwargs):
+                return None
+
+            async def wait_for_timeout(self, _timeout):
+                return None
+
+            async def wait_for_function(self, *_args, **_kwargs):
+                self.waits += 1
+                if self.waits == 1:
+                    raise RuntimeError("tabla todavía incompleta")
+
+            async def evaluate(self, _script):
+                return "Berkshire Cash and Market Capitalization"
+
+            def locator(self, _selector):
+                return Locator()
+
+        class Context:
+            def __init__(self):
+                self.page = Page()
+                self.closed = False
+
+            async def new_page(self):
+                return self.page
+
+            async def close(self):
+                self.closed = True
+
+        context = Context()
+
+        async def abrir_contexto(_nav):
+            return context
+
+        with patch.object(app, "contexto", side_effect=abrir_contexto), patch.object(
+            app, "proc_brk", return_value={"valid": True}
+        ) as validar:
+            tablas, cuerpo = asyncio.run(app.brk_web(object()))
+
+        self.assertEqual(context.page.reloads, 1)
+        self.assertTrue(context.closed)
+        validar.assert_called_once()
+        self.assertIn("TOTAL", tablas[0])
+        self.assertIn("Market Capitalization", cuerpo)
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js is required to exercise the embedded optimizer")
+class FronteraTests(unittest.TestCase):
+    def test_frontier_is_refined_and_excludes_cartera_even_for_short_ranges(self):
+        js = r"""
+let source = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => source += chunk);
+process.stdin.on('end', () => {
+  const html = JSON.parse(source);
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const start = script.indexOf('const OPT_BASE=');
+  const end = script.indexOf('function drawMarkowitz(', start);
+  const C = {x: ''};
+  const prices = {
+    SPY: [100, 102, 101, 104],
+    QQQ: [100, 103, 105, 107],
+    'BRK-A': [100, 101, 100.5, 102],
+    IWM: [100, 99, 102, 104]
+  };
+  const TS = prices.SPY.map((_, i) => Date.UTC(2026, 0, i + 1));
+  const get = key => ({s: 0, p: prices[key]});
+  const markowitz = new Function('C', 'TS', 'get', script.slice(start, end) + '; return markowitz;')(C, TS, get);
+  const result = markowitz(0, 3);
+  if (result.keys.includes('CG') || result.keys.length !== 3) throw new Error('Cartera entró en la optimización');
+  if (result.points.length <= result.basePoints.length) throw new Error('La frontera no agregó refinamiento');
+  for (const p of result.frontier) for (const q of result.points) {
+    const dominates = q.vol <= p.vol + 1e-10 && q.cagr >= p.cagr - 1e-10 &&
+      (q.vol < p.vol - 1e-10 || q.cagr > p.cagr + 1e-10);
+    if (dominates) throw new Error('La frontera contiene una cartera dominada');
+  }
+  C.x = 'IWM';
+  const short = markowitz(0, 1);
+  if (!short.keys.includes('IWM') || short.n !== 1) throw new Error('Falló el caso corto o el activo Otro');
+});
+"""
+        subprocess.run(
+            ["node", "-e", js],
+            input=json.dumps(app.HTML_T),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
 class ProcesamientoBrkTests(unittest.TestCase):
     def cuerpo(self):
         return (
@@ -766,6 +887,77 @@ class ResultadosBrkTests(unittest.TestCase):
         self.assertEqual(resultado["periodo"], "Q3 2026")
         self.assertEqual(parsear.call_args.args[1:3], (3, 2026))
         self.assertEqual(parsear.call_args.args[3], "https://www.berkshirehathaway.com/qtrly/3rdqtr26.pdf")
+
+    def test_busca_pdf_oficial_directo_si_el_indice_responde_403(self):
+        solicitudes = []
+
+        class Response:
+            def __init__(self, url, status, content=b"", text=""):
+                self.url, self.status_code = url, status
+                self.content, self.text = content, text
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    error = app.requests.HTTPError(f"HTTP {self.status_code}")
+                    error.response = self
+                    raise error
+
+        def get(url, **kwargs):
+            solicitudes.append(url)
+            if url.endswith("/reports.html"):
+                return Response(url, 403)
+            if url.endswith("/3rdqtr26.pdf"):
+                return Response(url, 200, b"%PDF synthetic")
+            return Response(url, 404)
+
+        fake_reader = type("Reader", (), {"pages": []})()
+        with patch.object(app.requests.Session, "get", side_effect=get), \
+                patch.object(app, "AHORA", app.AHORA.replace(year=2026, month=11, day=18)), \
+                patch("pypdf.PdfReader", return_value=fake_reader), \
+                patch.object(app, "procesar_resultados_brk", return_value={"periodo": "Q3 2026"}) as parsear:
+            resultado = app.bajar_resultados_brk()
+
+        self.assertEqual(resultado["periodo"], "Q3 2026")
+        self.assertEqual(solicitudes, [
+            "https://www.berkshirehathaway.com/reports.html",
+            "https://www.berkshirehathaway.com/qtrly/3rdqtr26.pdf",
+        ])
+        self.assertEqual(parsear.call_args.args[1:3], (3, 2026))
+        self.assertEqual(parsear.call_args.args[3], solicitudes[-1])
+
+
+class SubsidiariasTests(unittest.TestCase):
+    def test_acepta_el_directorio_oficial_y_cuenta_nombres_unicos(self):
+        enlaces = "".join(
+            f'<a href="https://example.com/{i}">Negocio {i // 2}</a>'
+            for i in range(21)
+        )
+        html = (
+            "<html><head><title>LINKS TO BERKSHIRE HATHAWAY SUB. COMPANIES</title></head>"
+            f"<body>{enlaces}<a href='https://example.com/privacy'>Privacy Policy</a></body></html>"
+        )
+
+        resultado = app.extraer_subsidiarias(html)
+
+        self.assertEqual(len(resultado), 21)
+        self.assertEqual(app.contar_negocios([(x["texto"], x["href"]) for x in resultado]), 11)
+
+    def test_rechaza_pagina_de_error_y_directorio_incompleto(self):
+        error = '<title>GoDaddy</title><a href="https://godaddy.com">GoDaddy</a>'
+        parcial = (
+            "<title>LINKS TO BERKSHIRE HATHAWAY SUB. COMPANIES</title>"
+            '<a href="https://supportx.sucuri.net/">open a support ticket</a>'
+            '<a href="https://example.com/1">Negocio</a>'
+            '<a href="https://godaddy.com/agreements/privacy">Privacy Policy</a></body></html>'
+        )
+        truncado = (
+            "<title>LINKS TO BERKSHIRE HATHAWAY SUB. COMPANIES</title>"
+            + "".join(f'<a href="https://example.com/{i}">Negocio {i}</a>' for i in range(21))
+        )
+
+        for html in (error, parcial, truncado):
+            with self.subTest(html=html), self.assertRaisesRegex(RuntimeError, "directorio"):
+                app.extraer_subsidiarias(html)
 
 
 if __name__ == "__main__":
