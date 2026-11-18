@@ -22,7 +22,7 @@ Otro_activo = globals().get("Otro_activo", "")
 #           doble clase por símbolo canónico; no se reescalan fuentes; diferencias menores se muestran sin asignar; "Residual de BRK" =
 #           capitalización − acciones − efectivo bruto (residual, no valuación contable); futuros y colaterales de QQQ no son efectivo.
 # Datos:    sin valores estáticos de respaldo: si una fuente falla se informa cuál y por qué (nunca inventar ni aproximar con otra fuente).
-#           SPY: archivo diario de State Street; QQQ: Invesco (CSV directo, Chrome con lectura de red, Playwright); BRK: CNBC (se reabre la
+#           SPY: archivo diario de State Street; QQQ: endpoint oficial de holdings usado por Portfolio/Export data (CSV y Chrome como respaldo); BRK: CNBC (se reabre la
 #           página y se espera a que cargue la tabla). Las tres consultas son independientes: se informa la fecha de dato de cada una.
 # Fechas:   acciones de BRK = cantidades del último 13F (más excepciones informadas por CNBC) valuadas a precio de mercado del último cierre
 #           hábil de la consulta (si es fin de semana, el viernes); efectivo = último balance trimestral; se verifica contra el TOTAL de CNBC.
@@ -45,6 +45,7 @@ import asyncio, glob, importlib.util, io, json, os, re, subprocess, sys, time, w
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from io import StringIO
+from urllib.parse import parse_qs, urlparse
 import numpy as np, pandas as pd, requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -149,6 +150,85 @@ def _pesos(serie, fuente):
         raise RuntimeError(f"{fuente}: hay pesos negativos.")
     return peso.astype(float)
 
+def _pesos_parciales(serie, fuente):
+    bruto = serie.astype(str).str.strip()
+    limpio = bruto.str.replace(r"[%,]", "", regex=True)
+    peso = pd.to_numeric(limpio, errors="coerce")
+    vacios = serie.isna() | bruto.eq("") | bruto.str.lower().isin(("nan", "none", "n/a", "--", "-"))
+    invalidos = ~vacios & peso.isna()
+    if invalidos.any():
+        raise RuntimeError(f"{fuente}: hay pesos ilegibles en {int(invalidos.sum())} posiciones.")
+    if not np.isfinite(peso.dropna().to_numpy(dtype=float)).all():
+        raise RuntimeError(f"{fuente}: hay pesos no finitos.")
+    return peso.astype(float)
+
+def _pesos_qqq(df, fuente, permitir_vacios=False):
+    peso = _pesos_parciales(df["Weight"], fuente)
+    if peso.isna().any() and not permitir_vacios:
+        raise RuntimeError(f"{fuente}: hay pesos vacíos.")
+    tipo = df["Tipo"].fillna("").astype(str).str.strip().str.lower()
+    nombre = df["Empresa"].fillna("").astype(str).str.strip().str.upper()
+    vencimiento = df["Vencimiento"] if "Vencimiento" in df else pd.Series("", index=df.index)
+    vencimiento = vencimiento.map(iso)
+    for i in peso.index[peso.lt(0).fillna(False)]:
+        if tipo.loc[i] != "synthetic cash" or not re.match(r"^CONTRA\s+FUTURE\b", nombre.loc[i]):
+            raise RuntimeError(f"{fuente}: hay pesos negativos que no son un contra-futuro identificado.")
+        fecha = vencimiento.loc[i]
+        if not fecha:
+            raise RuntimeError(f"{fuente}: el contra-futuro negativo no informa vencimiento.")
+        pares = tipo.str.contains(r"\bfuture\b", regex=True) & tipo.ne("synthetic cash") & vencimiento.eq(fecha) & peso.gt(0)
+        if int(pares.sum()) != 1 or not np.isclose(float(peso.loc[i]), -float(peso.loc[pares].iloc[0]), rtol=1e-5, atol=1e-6):
+            raise RuntimeError(f"{fuente}: el contra-futuro negativo no coincide con un futuro positivo del mismo vencimiento.")
+    return peso
+
+def _valor_mercado(serie, fuente):
+    bruto = serie.astype(str).str.strip()
+    limpio = bruto.str.replace(r"[$,]", "", regex=True)
+    valores = pd.to_numeric(limpio, errors="coerce")
+    vacios = serie.isna() | bruto.eq("") | bruto.str.lower().isin(("nan", "none", "n/a", "--", "-"))
+    invalidos = ~vacios & valores.isna()
+    if invalidos.any() or not np.isfinite(valores.dropna().to_numpy(dtype=float)).all():
+        raise RuntimeError(f"{fuente}: hay valores de mercado ilegibles o no finitos.")
+    return valores.astype(float)
+
+def _es_efectivo_sin_peso(fila):
+    ticker = str(fila.get("Ticker", "") or "").strip().upper()
+    nombre = str(fila.get("Empresa", fila.get("Name", "")) or "").replace("&amp;", "&").strip().upper()
+    tipo = str(fila.get("Tipo", "") or "").strip().lower()
+    if re.fullmatch(r"(?:U\.?S\.?\s+)?DOLLARS?|USD|CASH|CASH\s*(?:AND|&)\s*EQUIVALENTS", nombre):
+        return True
+    return ticker in EFEC and tipo in ("cash", "cash equivalent", "cash equivalents", "cash and equivalents")
+
+def _es_pendiente_dividendos(fila):
+    nombre = str(fila.get("Empresa", fila.get("Name", "")) or "").replace("&amp;", "&").strip().upper()
+    return bool(re.search(r"\bPENDING\s+DIVIDENDS?\b", nombre))
+
+def _completar_posicion_sin_tna(df, fuente, qqq=False):
+    peso = _pesos_qqq(df, fuente, permitir_vacios=True) if qqq else _pesos_parciales(df["Weight"], fuente)
+    faltan = peso.isna()
+    if not faltan.any():
+        return (_pesos_qqq(df, fuente) if qqq else _pesos(df["Weight"], fuente)), 0.0
+    conocidas = df.apply(lambda fila: _es_efectivo_sin_peso(fila) or _es_pendiente_dividendos(fila), axis=1)
+    if (~conocidas[faltan]).any():
+        raise RuntimeError(f"{fuente}: hay posiciones sin %TNA que no están identificadas como efectivo o dividendos pendientes.")
+    cv = col(df, ["marketvaluebase", "marketvalue", "valormercado"])
+    if not cv:
+        raise RuntimeError(f"{fuente}: no se puede ponderar la posición sin %TNA; falta el valor de mercado.")
+    mv = _valor_mercado(df[cv], fuente)
+    if mv.isna().any() or (mv.loc[faltan] <= 0).any():
+        raise RuntimeError(f"{fuente}: no se puede ponderar la posición sin %TNA; faltan valores de mercado positivos.")
+    base_mv, sin_tna_mv = float(mv.loc[~faltan].sum()), float(mv.loc[faltan].sum())
+    total_mv, suma_pesos = base_mv + sin_tna_mv, float(peso.loc[~faltan].sum())
+    if base_mv <= 0 or sin_tna_mv <= 0 or total_mv <= 0:
+        raise RuntimeError(f"{fuente}: valores de mercado incompatibles para ponderar la posición sin %TNA.")
+    if abs(suma_pesos - 100) > 0.01:
+        raise RuntimeError(f"{fuente}: no se recalculan posiciones con una suma original de {suma_pesos:.4f}%; primero debe reconciliarse la fuente.")
+    pct_derivado = sin_tna_mv / total_mv * 100
+    ajustado = peso.copy()
+    ajustado.loc[~faltan] = peso.loc[~faltan] * ((100 - pct_derivado) / suma_pesos)
+    ajustado.loc[faltan] = mv.loc[faltan] / total_mv * 100
+    return (_pesos_qqq(df.assign(Weight=ajustado), fuente) if qqq else _pesos(ajustado, fuente)), pct_derivado
+
 def _duplicados(df, col_ticker, fuente, col_tipo=None):
     tk = df[col_ticker].fillna("").astype(str).str.strip().str.upper()
     if col_tipo:
@@ -171,6 +251,15 @@ def _validar_tabla_qqq(df, fuente, minimo=50):
     if 100 - peso.sum() < -1e-6:
         raise RuntimeError(f"{fuente}: los pesos superan 100% ({peso.sum():.4f}%).")
     return float(peso.sum())
+
+def _validar_tabla_qqq_completa(df, fuente, minimo=50):
+    if len(df) < minimo:
+        raise RuntimeError(f"{fuente}: tabla incompleta ({len(df)} filas; se esperaban al menos {minimo}).")
+    peso = _pesos_qqq(df, fuente)
+    suma = float(peso.sum())
+    if suma > 100 + 1e-6 or 100 - suma > TOL_FUENTE:
+        raise RuntimeError(f"{fuente}: los pesos suman {suma:.4f}%, fuera de tolerancia.")
+    return suma
 
 def _elegir_qqq(candidatos):
     validos = []
@@ -239,40 +328,41 @@ def tabla_dom(html):  # respaldo: tabla de posiciones renderizada en la página 
     return _elegir_qqq(candidatos)[0]
 
 async def qqq_web(nav):
-    ctx = await contexto(nav); hits = []; pg = await ctx.new_page()
+    ctx = await contexto(nav); hits = []; errores = []; pg = await ctx.new_page()
+    u = "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/46090E103/holdings/fund?idType=cusip&productType=ETF"
     async def on_resp(r):
         try:
-            if not re.match(r"^https?://(?:[^/]+\.)?invesco\.com(?:/|$)", r.url, re.I): return
-            if "json" in r.headers.get("content-type", "").lower():
-                d = await r.json(); h = buscar(d)
-                if h:
-                    tabla = hold_df(h)
-                    _validar_tabla_qqq(tabla, "QQQ JSON")
-                    hits.append((tabla, iso(fjson(d))))
-        except Exception: pass
+            if not _es_api_qqq(r.url): return
+            if r.status != 200:
+                errores.append(f"holdings oficial: HTTP {r.status}")
+                return
+            d = await r.json()
+            hits.append(_tabla_qqq_oficial(d))
+        except Exception as e:
+            errores.append(f"holdings oficial: {type(e).__name__}: {e}")
     pg.on("response", on_resp)
     try:
-        for url in ("https://www.invesco.com/qqq-etf/en/about.html", "https://www.invesco.com/qqq-etf/en/home.html", "https://www.invesco.com/us/en/financial-products/etfs/invesco-qqq-trust-series-1.html"):
-            try:
-                await pg.goto(url, wait_until="domcontentloaded", timeout=45000)
-                await pg.wait_for_timeout(2500)
-                for rx in (r"accept|agree|allow", r"all (qqq )?holdings|view all"):
-                    for rol in ("button", "link"):
-                        try: await pg.get_by_role(rol, name=re.compile(rx, re.I)).first.click(timeout=1500); await pg.wait_for_timeout(1500)
-                        except Exception: pass
-                for _ in range(5): await pg.mouse.wheel(0, 900); await pg.wait_for_timeout(500)
-                for _ in range(40):
-                    if hits: break
-                    await pg.wait_for_timeout(500)
-                texto = await pg.locator("body").inner_text()
-                fd = (fasof(texto) or [None])[0]
-                if hits:
-                    tabla, f = _elegir_qqq(hits)
-                    return tabla, f or fd
-                d = tabla_dom(await pg.content())
-                if d is not None: return d, fd
-            except Exception: pass
-        raise RuntimeError("no se pudieron obtener las posiciones de QQQ desde invesco.com")
+        await pg.goto(LANDINGS[0], wait_until="domcontentloaded", timeout=45000)
+        try:
+            respuesta = await pg.evaluate(
+                """async (url) => {
+                    const r = await fetch(url, {headers: {Accept: "application/json"}});
+                    return {status: r.status, url: r.url, data: await r.json()};
+                }""",
+                u,
+            )
+            if respuesta["status"] != 200:
+                raise RuntimeError(f"holdings oficial: HTTP {respuesta['status']}")
+            if not _es_api_qqq(respuesta["url"]):
+                raise RuntimeError(f"holdings oficial redirigió fuera del endpoint: {respuesta['url']}")
+            return _tabla_qqq_oficial(respuesta["data"])
+        except Exception as e:
+            errores.append(f"consulta completa: {type(e).__name__}: {e}")
+        for _ in range(40):
+            if hits: return hits[0]
+            await pg.wait_for_timeout(500)
+        detalle = "; ".join(dict.fromkeys(errores[-8:]))
+        raise RuntimeError("Invesco no entregó la tabla oficial completa de QQQ" + (f": {detalle}" if detalle else "."))
     finally: await ctx.close()
 
 async def brk_web(nav):
@@ -304,98 +394,141 @@ async def subs_web(nav):
         return await pg.locator("a[href^='http']").evaluate_all("els => els.map(e => ({texto: e.innerText.trim(), href: e.href}))")
     finally: await ctx.close()
 
-LANDINGS = ("https://www.invesco.com/qqq-etf/en/about.html", "https://www.invesco.com/qqq-etf/en/home.html", "https://www.invesco.com/us/en/financial-products/etfs/invesco-qqq-trust-series-1.html")
+LANDINGS = ("https://www.invesco.com/us/en/financial-products/etfs/invesco-qqq-trust-series-1.html",)
 
 def hold_df(h):  # lista JSON de posiciones -> tabla estándar
     df = pd.json_normalize(h); ct, cp, cn, cy = col(df, KT), col(df, KP), col(df, KN), col(df, KY)
     if not (ct and cp): raise RuntimeError(f"JSON sin columnas de símbolo/peso: {list(df.columns)}")
-    return pd.DataFrame({"Ticker": df[ct], "Empresa": df[cn] if cn else "", "Tipo": df[cy] if cy else "", "Weight": df[cp]})
+    out = pd.DataFrame({"Ticker": df[ct], "Empresa": df[cn] if cn else "", "Tipo": df[cy] if cy else "", "Weight": df[cp]})
+    cv, ce = col(df, ["marketvaluebase", "marketvalue"]), col(df, ["contractexpirydate"])
+    if cv: out["Valor mercado"] = df[cv]
+    if ce: out["Vencimiento"] = df[ce]
+    return out
 
-def qqq_csv():  # intento 1: descarga directa del CSV oficial de posiciones
+def _es_api_qqq(url):
+    p = urlparse(url); q = parse_qs(p.query)
+    return (p.scheme == "https" and p.hostname == "dng-api.invesco.com"
+            and p.path == "/cache/v1/accounts/en_US/shareclasses/46090E103/holdings/fund"
+            and q.get("idType") == ["cusip"] and q.get("productType") == ["ETF"])
+
+def _tabla_qqq_oficial(data):
+    if not isinstance(data, dict) or not isinstance(data.get("holdings"), list):
+        raise RuntimeError("QQQ Invesco: la respuesta oficial no contiene la lista holdings.")
+    filas = data["holdings"]
+    total = data.get("totalNumberOfHoldings")
+    if isinstance(total, bool) or not isinstance(total, (int, float)) or not float(total).is_integer() or int(total) != len(filas):
+        raise RuntimeError(f"QQQ Invesco: recuento incompleto ({len(filas)} filas frente a totalNumberOfHoldings={total}).")
+    fecha = iso(data.get("effectiveDate"))
+    if not fecha:
+        raise RuntimeError("QQQ Invesco: la respuesta oficial no informa effectiveDate.")
+    if len(filas) < 50 or not all(isinstance(f, dict) for f in filas):
+        raise RuntimeError(f"QQQ Invesco: tabla incompleta o inválida ({len(filas)} filas).")
+    tabla = hold_df(filas)
+    tabla["Ticker"] = tabla["Ticker"].fillna("").astype(str).str.strip()
+    tabla["Empresa"] = tabla["Empresa"].fillna("").astype(str).str.strip()
+    tabla["Tipo"] = tabla["Tipo"].fillna("").astype(str).str.strip()
+    if (tabla["Ticker"].eq("") & tabla["Empresa"].eq("")).any():
+        raise RuntimeError("QQQ Invesco: hay posiciones sin símbolo ni nombre.")
+    pesos, derivado = _completar_posicion_sin_tna(tabla, "QQQ Invesco", qqq=True)
+    tabla["Weight"] = pesos
+    _validar_tabla_qqq_completa(tabla, "QQQ Invesco")
+    tabla.attrs["peso_sin_tna_derivado"] = float(derivado)
+    return tabla, fecha
+
+def qqq_api():
+    u = "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/46090E103/holdings/fund?idType=cusip&productType=ETF"
+    r = requests.get(
+        u,
+        headers={"User-Agent": UA, "Accept": "application/json", "Origin": "https://www.invesco.com",
+                 "Referer": LANDINGS[0]},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"API oficial de Invesco: HTTP {r.status_code}")
+    if not _es_api_qqq(r.url):
+        raise RuntimeError(f"API oficial de Invesco redirigió fuera de holdings/fund: {r.url}")
+    return _tabla_qqq_oficial(r.json())
+
+def qqq_csv():  # respaldo: descarga directa del CSV oficial de posiciones
     u = "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?audienceType=Investor&action=download&ticker=QQQ"
-    r = requests.get(u, headers={"User-Agent": UA, "Referer": LANDINGS[0]}, timeout=20)
-    if r.status_code != 200 or len(r.content) < 2000: raise RuntimeError(f"HTTP {r.status_code}")
-    if not re.match(r"^https?://www\.invesco\.com/.*/holdings/", r.url, re.I):
-        raise RuntimeError(f"El CSV de Invesco redirigió fuera del endpoint de posiciones: {r.url}")
-    df = pd.read_csv(io.StringIO(r.text)); ct, cp, cn, cf = col(df, ["holdingticker"] + KT), col(df, KP), col(df, ["name"] + KN), col(df, ["date", "asofdate"])
-    cy = col(df, KY)
-    if not (ct and cp and (cn or cy)): raise RuntimeError("CSV oficial de Invesco sin columnas de símbolo, peso e identificación del instrumento")
-    tk = df[ct].fillna("").astype(str).str.strip()
-    out = pd.DataFrame({"Ticker": tk, "Empresa": df[cn].fillna("").astype(str) if cn else "",
-                        "Tipo": df[cy].fillna("").astype(str) if cy else "", "Weight": df[cp]})
-    out = out[out[["Ticker", "Empresa", "Tipo"]].astype(str).apply(lambda row: any(v.strip() for v in row), axis=1)].copy()
-    _validar_tabla_qqq(out, "CSV oficial de Invesco")
-    return out, iso(df[cf].iloc[0]) if cf else None
+    ultimo = None
+    for intento, espera in enumerate((0, 2, 5), start=1):
+        if espera: time.sleep(espera)
+        try:
+            r = requests.get(u, headers={"User-Agent": UA, "Referer": LANDINGS[0]}, timeout=20)
+            if r.status_code != 200 or len(r.content) < 2000:
+                raise RuntimeError(f"HTTP {r.status_code} ({len(r.content)} bytes)")
+            if not re.match(r"^https?://www\.invesco\.com/.*/holdings/", r.url, re.I):
+                raise RuntimeError(f"El CSV de Invesco redirigió fuera del endpoint de posiciones: {r.url}")
+            df = pd.read_csv(io.StringIO(r.text)); ct, cp, cn, cf = col(df, ["holdingticker"] + KT), col(df, KP), col(df, ["name"] + KN), col(df, ["date", "asofdate"])
+            cy, cv, ce = col(df, KY), col(df, ["marketvaluebase", "marketvalue"]), col(df, ["contractexpirydate"])
+            if not (ct and cp and (cn or cy)): raise RuntimeError("CSV oficial de Invesco sin columnas de símbolo, peso e identificación del instrumento")
+            tk = df[ct].fillna("").astype(str).str.strip()
+            out = pd.DataFrame({"Ticker": tk, "Empresa": df[cn].fillna("").astype(str) if cn else "",
+                                "Tipo": df[cy].fillna("").astype(str) if cy else "", "Weight": df[cp]})
+            if cv: out["Valor mercado"] = df[cv]
+            if ce: out["Vencimiento"] = df[ce]
+            out = out[out[["Ticker", "Empresa", "Tipo", "Weight"]].astype(str).apply(lambda row: any(v.strip() for v in row), axis=1)].copy()
+            out["Weight"], derivado = _completar_posicion_sin_tna(out, "CSV oficial de Invesco", qqq=True)
+            _validar_tabla_qqq_completa(out, "CSV oficial de Invesco")
+            fecha = iso(df[cf].iloc[0]) if cf else None
+            if not fecha: raise RuntimeError("CSV oficial de Invesco sin fecha efectiva.")
+            out.attrs["peso_sin_tna_derivado"] = float(derivado)
+            return out, fecha
+        except (requests.RequestException, RuntimeError, ValueError, UnicodeError) as e:
+            ultimo = e
+    raise RuntimeError(f"CSV oficial de Invesco: 3 intentos fallidos; último error: {ultimo}")
 
 def chrome_listo():
     if importlib.util.find_spec("selenium") is None: subprocess.run([sys.executable, "-m", "pip", "install", "-q", "selenium"], check=True)
     if not os.path.exists("/usr/bin/google-chrome"):
         subprocess.run(["bash", "-c", "wget -q -O /tmp/gc.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && apt-get update -qq && apt-get install -y -qq /tmp/gc.deb"], check=True, capture_output=True)
 
-def qqq_selenium():  # intento 2: Chrome real + lectura de las respuestas JSON de red (método que ya funcionó)
+def qqq_selenium():  # último respaldo: Chrome real + respuestas JSON de red
     chrome_listo()
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
     from selenium.webdriver.chrome.service import Service
-    from selenium.webdriver.common.by import By
     o = Options(); o.binary_location = "/usr/bin/google-chrome"
     for a in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-extensions", "--window-size=1920,1080", "--lang=en-US", "--user-data-dir=/tmp/selenium-qqq-profile"): o.add_argument(a)
     o.set_capability("goog:loggingPrefs", {"performance": "ALL"})
     d = webdriver.Chrome(service=Service(), options=o); errs = []
-    def clic(textos):
-        for t in textos:
-            try:
-                for e in d.find_elements(By.XPATH, f"//*[self::button or self::a][contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{t}')]"):
-                    try:
-                        if e.is_displayed():
-                            d.execute_script("arguments[0].scrollIntoView({block:'center'});", e); time.sleep(1)
-                            d.execute_script("arguments[0].click();", e); time.sleep(3); return True
-                    except Exception: pass
-            except Exception: pass
-        return False
     try:
-        try: d.execute_cdp_cmd("Network.enable", {})
-        except Exception: pass
+        d.execute_cdp_cmd("Network.enable", {})
         for url in LANDINGS:
             try:
-                try: d.get_log("performance")
-                except Exception: pass
-                d.get(url); time.sleep(8)
-                clic(("accept all", "accept", "i agree", "allow all")); clic(("view all holdings", "all qqq holdings", "all holdings", "holdings"))
-                for _ in range(5): d.execute_script("window.scrollBy(0, Math.floor(window.innerHeight*0.8));"); time.sleep(1)
-                time.sleep(8); hits = []
+                d.get_log("performance")
+                d.get(url); time.sleep(10); hits = []
                 for e in d.get_log("performance"):
                     try: m = json.loads(e["message"])["message"]
                     except Exception: continue
                     if m.get("method") != "Network.responseReceived": continue
-                    p = m["params"]; r = p.get("response", {}); u = r.get("url", "").lower()
-                    if not re.match(r"^https?://(?:[^/]+\.)?invesco\.com(?:/|$)", u, re.I): continue
-                    if not ("json" in r.get("mimeType", "").lower() or "api" in u or "graphql" in u or "hold" in u): continue
+                    p = m["params"]; r = p.get("response", {}); u = r.get("url", "")
+                    if not _es_api_qqq(u): continue
+                    if r.get("status") != 200:
+                        errs.append(f"{url}: holdings oficial HTTP {r.get('status')}")
+                        continue
                     try:
                         dj = json.loads(d.execute_cdp_cmd("Network.getResponseBody", {"requestId": p["requestId"]}).get("body", ""))
-                        h = buscar(dj)
-                        if h:
-                            tabla = hold_df(h)
-                            _validar_tabla_qqq(tabla, "QQQ JSON")
-                            hits.append((tabla, iso(fjson(dj))))
-                    except Exception: continue
-                txt = d.find_element(By.TAG_NAME, "body").text; fd = (fasof(txt) or [None])[0]
-                if hits:
-                    tabla, f = _elegir_qqq(hits); return tabla, f or fd
-                dom = tabla_dom(d.page_source)
-                if dom is not None: return dom, fd
-                errs.append(f"{url}: sin JSON ni tabla")
+                        hits.append(_tabla_qqq_oficial(dj))
+                    except Exception as e: errs.append(f"{url}: {type(e).__name__}: {e}")
+                if hits: return hits[0]
+                errs.append(f"{url}: no se recibió la tabla oficial de posiciones")
             except Exception as e: errs.append(f"{url}: {type(e).__name__}")
         raise RuntimeError("; ".join(errs))
     finally: d.quit()
 
 async def qqq_total(nav, loop):
     errs = []
-    for nombre, fn in (("descarga directa", qqq_csv), ("Chrome", qqq_selenium)):
+    try: return await qqq_web(nav)
+    except Exception as e: errs.append(f"API oficial en navegador: {e}")
+    try: return await loop.run_in_executor(None, qqq_api)
+    except Exception as e: errs.append(f"API oficial directa: {e}")
+    try: return await loop.run_in_executor(None, qqq_csv)
+    except Exception as e: errs.append(f"descarga directa: {e}")
+    for nombre, fn in (("Chrome", qqq_selenium),):
         try: return await loop.run_in_executor(None, fn)
         except Exception as e: errs.append(f"{nombre}: {e}")
-    try: return await qqq_web(nav)
-    except Exception as e: errs.append(f"Playwright: {e}")
     raise RuntimeError(" | ".join(errs))
 
 async def traer():
@@ -420,7 +553,9 @@ def proc_spy(b):
     df = raw.iloc[h + 1:].copy(); df.columns = raw.iloc[h].astype(str).str.strip()
     requeridas = {"Ticker", "Name", "Weight"}
     if not requeridas.issubset(df.columns): raise RuntimeError(f"SPY: faltan columnas oficiales: {sorted(requeridas - set(df.columns))}.")
-    df = df[["Ticker", "Name", "Weight"]].copy()
+    cv = col(df, ["marketvaluebase", "marketvalue"])
+    df = df[["Ticker", "Name", "Weight"] + ([cv] if cv else [])].copy()
+    if cv: df = df.rename(columns={cv: "Valor mercado"})
     df["Ticker"] = df["Ticker"].fillna("").astype(str).str.strip().str.upper()
     df.loc[df["Ticker"].isin(("NAN", "NONE", "N/A")), "Ticker"] = ""
     df["Name"] = df["Name"].fillna("").astype(str).str.strip()
@@ -428,13 +563,20 @@ def proc_spy(b):
     presentes = df["Ticker"].ne("") | df["Name"].ne("") | tiene_peso
     df = df[presentes].copy()
     if df.empty: raise RuntimeError("SPY: la tabla no contiene posiciones.")
-    df["Weight"] = _pesos(df["Weight"], "SPY")
+    df["Weight"], peso_sin_tna = _completar_posicion_sin_tna(df, "SPY")
     _duplicados(df, "Ticker", "SPY")
-    cash = df["Name"].str.upper().isin(("US DOLLAR", "USD", "CASH")) | df["Ticker"].isin(EFEC)
-    especial = ~cash & (df["Ticker"].eq("") | df["Ticker"].str.match(r"^(?:\d+$|-)"))
+    nombre = df["Name"].str.upper().str.replace("&AMP;", "&", regex=False)
+    dividendos = nombre.str.contains(r"\bPENDING\s+DIVIDENDS?\b", regex=True)
+    cash = (nombre.isin(("US DOLLAR", "USD", "CASH", "CASH & EQUIVALENTS")) | df["Ticker"].isin(EFEC)) & ~dividendos
+    especial = ~cash & ~dividendos & (df["Ticker"].eq("") | df["Ticker"].str.match(r"^(?:\d+$|-)"))
     emp = df[~cash & ~especial].copy()
+    emp = emp[~dividendos.loc[emp.index]]
     emp["T"] = emp["Ticker"].map(canon)
     w, n = emp.groupby("T")["Weight"].sum(), emp.groupby("T")["Name"].first()
+    if dividendos.any():
+        clave = "__SPY_DIVIDENDOS_PENDIENTES"
+        w.loc[clave] = float(df.loc[dividendos, "Weight"].sum())
+        n.loc[clave] = "SPY · dividendos pendientes"
     esp = df[especial].copy()
     for _, row in esp.iterrows():
         detalle = row["Ticker"] or row["Name"] or "sin símbolo ni nombre"
@@ -444,12 +586,14 @@ def proc_spy(b):
     raro = float(esp["Weight"].sum())
     if raro > UMBRAL_DESCONOCIDO:
         raise RuntimeError(f"SPY: {raro:.2f}% está en posiciones especiales o sin clasificar; revisión requerida.")
-    return dict(w=w, n=n, ef=float(df.loc[cash, "Weight"].sum()), raro=raro, bruto=float(df["Weight"].sum()), fecha=fecha, lineas=len(df))
+    return dict(w=w, n=n, ef=float(df.loc[cash, "Weight"].sum()), raro=raro, peso_sin_tna_derivado=peso_sin_tna,
+                bruto=float(df["Weight"].sum()), fecha=fecha, lineas=len(df))
 
 def proc_qqq(df, fecha):
     requeridas = {"Ticker", "Empresa", "Tipo", "Weight"}
     if not requeridas.issubset(df.columns): raise RuntimeError(f"QQQ: faltan columnas de posiciones: {sorted(requeridas - set(df.columns))}.")
     df = df.copy()
+    peso_sin_tna_fuente = float(df.attrs.get("peso_sin_tna_derivado", 0.0))
     for c in ("Ticker", "Empresa", "Tipo"): df[c] = df[c].fillna("").astype(str).str.strip()
     df["Ticker"] = df["Ticker"].str.upper()
     df.loc[df["Ticker"].isin(("NAN", "NONE", "N/A", "-")), "Ticker"] = ""
@@ -457,23 +601,32 @@ def proc_qqq(df, fecha):
     presentes = df[["Ticker", "Empresa", "Tipo"]].ne("").any(axis=1) | tiene_peso
     df = df[presentes].copy()
     if df.empty: raise RuntimeError("QQQ: la tabla no contiene posiciones.")
-    df["Weight"] = _pesos(df["Weight"], "QQQ")
+    df["Weight"], peso_sin_tna = _completar_posicion_sin_tna(df, "QQQ", qqq=True)
+    peso_sin_tna = max(peso_sin_tna, peso_sin_tna_fuente)
     _duplicados(df, "Ticker", "QQQ", "Tipo")
     if not fecha: raise RuntimeError("QQQ: la fuente no informa fecha efectiva de posiciones.")
     tipo = df["Tipo"].str.strip().str.lower()
     nombre = df["Empresa"].str.strip().str.upper()
-    tipo_no_efectivo = tipo.str.contains(r"future|guarantee|collateral", regex=True) | tipo.isin(("synthetic cash", "currency"))
-    efectivo_nombre = nombre.str.match(r"^(?:U\.?S\.?\s+)?DOLLARS?$|^CASH(?:\s+AND\s+EQUIVALENTS)?$|^USD$")
+    efectivo_nombre = nombre.str.replace("&AMP;", "&", regex=False).str.match(
+        r"^(?:(?:U\.?S\.?\s+)?DOLLARS?|CASH(?:\s*(?:AND|&)\s*EQUIVALENTS)?|USD)$"
+    )
     efectivo_tipo = tipo.isin(("cash", "cash equivalent", "cash equivalents", "cash and equivalents"))
-    efectivo = (df["Ticker"].isin(EFEC) | efectivo_nombre | efectivo_tipo) & ~tipo_no_efectivo
+    dividendos = df.apply(_es_pendiente_dividendos, axis=1)
+    efectivo = (efectivo_nombre | efectivo_tipo) & ~dividendos
+    tipo_no_efectivo = (tipo.str.contains(r"future|guarantee|collateral", regex=True)
+                        | tipo.eq("synthetic cash") | (tipo.eq("currency") & ~efectivo))
     especial = pd.Series("", index=df.index, dtype=object)
     especial[tipo.str.contains(r"\bfuture", regex=True)] = "FUTUROS"
+    contra_futuro = tipo.eq("synthetic cash") & nombre.str.match(r"^CONTRA\s+FUTURE\b")
+    especial[contra_futuro] = "FUTUROS"
     especial[tipo.str.contains("guarantee", regex=False)] = "GARANTIAS"
     especial[tipo.str.contains("collateral", regex=False)] = "COLATERALES"
-    especial[tipo.eq("synthetic cash")] = "EFECTIVO_SINTETICO"
-    especial[tipo.eq("currency")] = "DIVISA"
-    tipo_accion = tipo.isin(("equity", "stock", "common stock", "common shares", "ordinary shares"))
-    tipo_desconocido = tipo.ne("") & ~tipo_no_efectivo & ~efectivo_tipo & ~tipo_accion
+    especial[tipo.eq("synthetic cash") & ~contra_futuro] = "EFECTIVO_SINTETICO"
+    especial[tipo.eq("currency") & ~efectivo] = "DIVISA"
+    especial[dividendos] = "DIVIDENDOS_PENDIENTES"
+    tipo_accion = tipo.isin(("equity", "stock", "common stock", "common shares", "ordinary shares",
+                             "american depository receipt", "american depository receipt - ny"))
+    tipo_desconocido = ~tipo_no_efectivo & ~efectivo_tipo & ~tipo_accion
     no_clasificado = ~efectivo & especial.eq("") & (
         tipo_desconocido | df["Ticker"].eq("") | df["Ticker"].str.match(r"^(?:\d+$|-)")
     )
@@ -488,7 +641,8 @@ def proc_qqq(df, fecha):
         clave = f"__QQQ_{clase}"
         w.loc[clave] = float(df.loc[m, "Weight"].sum())
         n.loc[clave] = "QQQ · " + {"FUTUROS": "futuros", "GARANTIAS": "garantías", "COLATERALES": "colaterales",
-                                    "EFECTIVO_SINTETICO": "efectivo sintético", "DIVISA": "instrumentos en divisa"}.get(clase, clase.lower())
+                                    "EFECTIVO_SINTETICO": "efectivo sintético", "DIVISA": "instrumentos en divisa",
+                                    "DIVIDENDOS_PENDIENTES": "dividendos pendientes"}.get(clase, clase.lower())
     for _, row in df[no_clasificado].iterrows():
         detalle = row["Ticker"] or row["Empresa"] or row["Tipo"] or "sin detalle"
         clave = _clave_categoria("QQQ", "SIN_CLASIFICAR", detalle)
@@ -498,7 +652,7 @@ def proc_qqq(df, fecha):
     if desconocido > UMBRAL_DESCONOCIDO:
         raise RuntimeError(f"QQQ: {desconocido:.2f}% está en posiciones sin clasificar; revisión requerida.")
     return dict(w=w, n=n, ef=float(df.loc[efectivo, "Weight"].sum()), bruto=float(df["Weight"].sum()),
-                desconocido=desconocido, fecha=fecha, lineas=len(df))
+                desconocido=desconocido, peso_sin_tna_derivado=peso_sin_tna, fecha=fecha, lineas=len(df))
 
 def proc_brk(htmls, cuerpo):
     dfs = []
@@ -625,7 +779,8 @@ def armar(S, Q, B, subs, subs_err):
         n, h = (e["texto"] or "").strip(), e["href"]; dom = re.sub(r"^https?://(www\.)?", "", h).split("/")[0].lower()
         url = h.split("#", 1)[0].rstrip("/")
         if n and "berkshirehathaway.com" not in dom and url not in vistos: vistos.add(url); lst.append([n, h])
-    gap = dict(S=gap_s, Q=gap_q, raro=S.get("raro", 0.0), desconocido=Q.get("desconocido", 0.0))
+    gap = dict(S=gap_s, Q=gap_q, raro=S.get("raro", 0.0), desconocido=Q.get("desconocido", 0.0),
+               sin_tna_S=S.get("peso_sin_tna_derivado", 0.0), sin_tna_Q=Q.get("peso_sin_tna_derivado", 0.0))
     return D, lst, gap
 
 GITHUB_OWNER, GITHUB_REPO = "maurosimeonoff", "Finanzas"
@@ -1001,8 +1156,8 @@ async def construir():
         "<li><b>Aporte.</b> Ponderación del activo dentro de su fuente × asignación de esa fuente.</li>"
         "<li><b>BRK dentro de SPY.</b> Esa posición se reemplaza por la composición de BRK y se suma a la asignación directa de BRK, sin doble conteo.</li>"
         "<li><b>Doble clase.</b> Las acciones con más de una clase (Alphabet, Lennar, Fox, News Corp) se consolidan por símbolo.</li>"
-        f"<li><b>Integridad de las fuentes.</b> SPY y QQQ no se reescalan: brechas de hasta {TOL_FUENTE:.1f}% quedan explícitas como brecha de fuente sin asignar; una brecha mayor o una suma superior a 100% bloquea la cartera.</li>"
-        "<li><b>Efectivo e instrumentos de QQQ.</b> Solo efectivo identificado se agrupa como Efectivo; futuros, garantías, colaterales, divisas y posiciones sin clasificar se muestran por separado.</li>"
+        f"<li><b>Integridad de las fuentes.</b> SPY y QQQ no se reescalan: brechas de hasta {TOL_FUENTE:.1f}% quedan explícitas como brecha de fuente sin asignar; una brecha mayor o una suma superior a 100% bloquea la cartera. Excepción: si la fuente identifica efectivo o dividendos pendientes, informa su valor de mercado pero omite el %TNA, se calcula ese peso y se ajustan proporcionalmente los restantes.</li>"
+        "<li><b>Efectivo e instrumentos de QQQ.</b> Solo efectivo disponible identificado se agrupa como Efectivo; futuros, garantías, colaterales, dividendos pendientes, divisas y posiciones sin clasificar se muestran por separado.</li>"
         "<li><b>Residual de BRK.</b> Capitalización − acciones − efectivo: residual de mercado implícito, no una valuación de los negocios privados.</li>"
         "<li><b>Gráficos.</b> Los 10 primeros incluyen siempre Efectivo y Residual de BRK; el resto se agrupa.</li>"
         "<li><b>Selector.</b> Enteros que suman 100: SPY reparte entre QQQ y BRK; QQQ solo mueve a BRK; BRK reparte entre SPY y QQQ.</li></ol>")
@@ -1011,6 +1166,8 @@ async def construir():
     if gap["Q"] > 1e-6: alertas.append(f"<li><b>QQQ:</b> {gap['Q']:.2f}% quedó explícito como brecha de fuente sin asignar.</li>")
     if gap["raro"] > 0: alertas.append(f"<li><b>SPY:</b> {gap['raro']:.2f}% corresponde a posiciones especiales; se conserva como categoría explícita.</li>")
     if gap["desconocido"] > 0: alertas.append(f"<li><b>QQQ:</b> {gap['desconocido']:.2f}% corresponde a posiciones sin clasificar; se conserva aparte del efectivo.</li>")
+    if gap["sin_tna_S"] > 0: alertas.append(f"<li><b>SPY:</b> {gap['sin_tna_S']:.4f}% de efectivo o dividendos pendientes se ponderó desde el valor de mercado porque la fuente no informó %TNA; las demás ponderaciones se ajustaron proporcionalmente.</li>")
+    if gap["sin_tna_Q"] > 0: alertas.append(f"<li><b>QQQ:</b> {gap['sin_tna_Q']:.4f}% de dividendos pendientes sin %TNA se ponderó desde el valor de mercado y se mantiene por separado de efectivo y colaterales; las demás ponderaciones se ajustaron proporcionalmente.</li>")
     salvedades = (f"<ul><li><b>Efectivo bruto consolidado de BRK:</b> US$ {B['cash']/1e9:.1f} mil millones según CNBC (incluye el efectivo de BNSF).{neto}</li>"
         "<li><b>Desfasaje temporal:</b> el efectivo corresponde al último balance trimestral y las acciones se valúan a precio de mercado del último cierre hábil, por lo que Residual de BRK absorbe esa diferencia.</li>"
         "<li><b>Cierre hábil:</b> si se consulta en fin de semana se toma el viernes; no se consideran feriados de EE.UU.</li>"

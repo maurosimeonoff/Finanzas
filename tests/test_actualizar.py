@@ -65,6 +65,24 @@ class ProcesamientoSpyTests(unittest.TestCase):
         self.assertIn("BABA.SW", out["w"].index)
         self.assertIn("7203.T", out["w"].index)
 
+    def test_deriva_y_separa_dividendos_pendientes_sin_porcentaje(self):
+        raw = pd.DataFrame(
+            [
+                ["As of 18-Nov-2026", "", "", ""],
+                ["Ticker", "Name", "Weight", "Market Value"],
+                ["AAPL", "Apple Inc.", 100, 100],
+                ["", "USD Pending Dividends", None, 1],
+            ]
+        )
+        with patch.object(app.pd, "read_excel", return_value=raw):
+            out = app.proc_spy(b"fixture")
+
+        self.assertAlmostEqual(out["w"]["AAPL"], 100 / 101 * 100)
+        self.assertAlmostEqual(out["w"]["__SPY_DIVIDENDOS_PENDIENTES"], 1 / 101 * 100)
+        self.assertEqual(out["ef"], 0)
+        self.assertAlmostEqual(out["bruto"], 100)
+        self.assertAlmostEqual(out["peso_sin_tna_derivado"], 1 / 101 * 100)
+
 
 class ProcesamientoQqqTests(unittest.TestCase):
     FECHA = "2026-11-18"
@@ -78,14 +96,15 @@ class ProcesamientoQqqTests(unittest.TestCase):
     def test_separa_efectivo_de_futuros_garantias_colaterales_y_sin_ticker(self):
         out = self.procesar(
             [
-                ["AAPL", "Apple Inc.", "Equity", 93],
+                ["AAPL", "Apple Inc.", "Equity", 92.5],
                 ["", "Index future", "Index Future", 1],
                 ["", "Guarantee", "Guarantee", 1],
                 ["", "Currency collateral", "Currency Collateral", 1],
                 ["", "Synthetic cash", "Synthetic Cash", 1],
                 ["", "Foreign currency", "Currency", 1],
-                ["USD", "US Dollar", "Cash", 1],
-                ["USD", "Dollar future", "Currency", 0.5],
+                ["USD", "CASH &amp; EQUIVALENTS", "Currency", 1],
+                ["USDPDV", "USD Pending Dividends", "Currency", 0.5],
+                ["JPY", "Dollar future", "Currency", 0.5],
                 ["", "Unidentified", "Other", 0.5],
             ]
         )
@@ -96,6 +115,7 @@ class ProcesamientoQqqTests(unittest.TestCase):
         self.assertEqual(out["w"]["__QQQ_COLATERALES"], 1)
         self.assertEqual(out["w"]["__QQQ_EFECTIVO_SINTETICO"], 1)
         self.assertEqual(out["w"]["__QQQ_DIVISA"], 1.5)
+        self.assertEqual(out["w"]["__QQQ_DIVIDENDOS_PENDIENTES"], 0.5)
         sin_clasificar = [k for k in out["w"].index if k.startswith("__QQQ_SIN_CLASIFICAR_")]
         self.assertEqual(sum(out["w"][k] for k in sin_clasificar), 0.5)
         self.assertAlmostEqual(out["bruto"], 100)
@@ -117,6 +137,27 @@ class ProcesamientoQqqTests(unittest.TestCase):
             app._validar_tabla_qqq(good.iloc[:49], "fixture")
         with self.assertRaisesRegex(RuntimeError, "sin clasificar"):
             self.procesar([["", "Unknown instrument", "Other", 2], ["AAPL", "Apple", "Equity", 98]])
+        with self.assertRaisesRegex(RuntimeError, "sin clasificar"):
+            self.procesar([["UNKN", "Unverified instrument", "", 2], ["AAPL", "Apple", "Equity", 98]])
+
+    def test_derivados_solo_netea_contra_futuro_oficial_del_mismo_vencimiento(self):
+        filas = [
+            ["AAPL", "Apple Inc.", "Common Stock", 99.6],
+            ["NQZ6", "CME E-Mini NASDAQ 100 Index Future", "Index Future", 0.2],
+            ["", "CONTRA FUTURE FUTURE DEC 18 26", "Synthetic Cash", -0.2],
+            ["USD", "CASH &amp; EQUIVALENTS", "Currency", 0.4],
+        ]
+        df = pd.DataFrame(filas, columns=["Ticker", "Empresa", "Tipo", "Weight"])
+        df["Vencimiento"] = [None, "2026-12-18", "2026-12-18", None]
+        out = app.proc_qqq(df, self.FECHA)
+
+        self.assertAlmostEqual(out["w"]["__QQQ_FUTUROS"], 0)
+        self.assertAlmostEqual(out["ef"], 0.4)
+        self.assertAlmostEqual(out["bruto"], 100)
+
+        df.loc[2, "Weight"] = -0.1
+        with self.assertRaisesRegex(RuntimeError, "no coincide"):
+            app.proc_qqq(df, self.FECHA)
 
     def test_json_selecciona_tabla_completa_por_suma_no_por_longitud(self):
         correcta = [{"ticker": f"T{i:02}", "name": f"Company {i}", "weight": 100 / 50} for i in range(50)]
@@ -125,6 +166,165 @@ class ProcesamientoQqqTests(unittest.TestCase):
 
         self.assertEqual(encontrada, correcta)
         self.assertIsNone(app.buscar({"holdings": correcta[:49]}))
+
+    def test_api_oficial_reconcilia_recuento_y_dividendos_sin_peso(self):
+        holdings = [
+            {
+                "ticker": f"T{i:02}",
+                "issuerName": f"Company {i}",
+                "percentageOfTotalNetAssets": 1.992,
+                "securityTypeName": "American Depository Receipt - NY" if i == 0 else "Common Stock",
+                "marketValueBase": 1.992,
+                "contractExpiryDate": None,
+            }
+            for i in range(50)
+        ]
+        holdings.extend(
+            [
+                {
+                    "ticker": "NQZ6",
+                    "issuerName": "CME E-Mini NASDAQ 100 Index Future",
+                    "percentageOfTotalNetAssets": 0.2,
+                    "securityTypeName": "Index Future",
+                    "marketValueBase": 0.2,
+                    "contractExpiryDate": "2026-12-18",
+                },
+                {
+                    "ticker": None,
+                    "issuerName": "CONTRA FUTURE FUTURE DEC 18 26",
+                    "percentageOfTotalNetAssets": -0.2,
+                    "securityTypeName": "Synthetic Cash",
+                    "marketValueBase": -0.2,
+                    "contractExpiryDate": "2026-12-18",
+                },
+                {
+                    "ticker": "USD",
+                    "issuerName": "CASH &amp; EQUIVALENTS",
+                    "percentageOfTotalNetAssets": 0.2,
+                    "securityTypeName": "Currency",
+                    "marketValueBase": 0.2,
+                    "contractExpiryDate": None,
+                },
+                {
+                    "ticker": None,
+                    "issuerName": "CASH COLLATERAL",
+                    "percentageOfTotalNetAssets": 0.1,
+                    "securityTypeName": "Currency Collateral",
+                    "marketValueBase": 0.1,
+                    "contractExpiryDate": None,
+                },
+                {
+                    "ticker": None,
+                    "issuerName": "Guarantee",
+                    "percentageOfTotalNetAssets": 0.1,
+                    "securityTypeName": "Guarantee",
+                    "marketValueBase": 0.1,
+                    "contractExpiryDate": None,
+                },
+            ]
+        )
+        holdings.append(
+            {
+                "ticker": "USDPDV",
+                "issuerName": "USD Pending Dividends",
+                "percentageOfTotalNetAssets": None,
+                "securityTypeName": "Currency",
+                "marketValueBase": 2,
+                "contractExpiryDate": None,
+            }
+        )
+        data = {
+            "effectiveDate": self.FECHA,
+            "totalNumberOfHoldings": len(holdings),
+            "holdings": holdings,
+        }
+        tabla, fecha = app._tabla_qqq_oficial(data)
+        procesado = app.proc_qqq(tabla, fecha)
+
+        self.assertEqual(fecha, self.FECHA)
+        self.assertEqual(len(tabla), 56)
+        self.assertAlmostEqual(tabla["Weight"].sum(), 100)
+        self.assertAlmostEqual(tabla.attrs["peso_sin_tna_derivado"], 2 / 102 * 100)
+        self.assertAlmostEqual(procesado["w"]["__QQQ_DIVIDENDOS_PENDIENTES"], 2 / 102 * 100)
+        self.assertAlmostEqual(procesado["ef"], 0.2 * 100 / 102)
+        self.assertAlmostEqual(procesado["w"]["__QQQ_FUTUROS"], 0)
+        self.assertAlmostEqual(procesado["w"]["__QQQ_COLATERALES"], 0.1 * 100 / 102)
+        self.assertAlmostEqual(procesado["w"]["__QQQ_GARANTIAS"], 0.1 * 100 / 102)
+        self.assertEqual(procesado["desconocido"], 0)
+        self.assertAlmostEqual(procesado["bruto"], 100)
+
+        data["totalNumberOfHoldings"] += 1
+        with self.assertRaisesRegex(RuntimeError, "recuento incompleto"):
+            app._tabla_qqq_oficial(data)
+
+    def test_api_usa_el_endpoint_oficial_de_holdings_y_no_otra_tabla(self):
+        url = (
+            "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/"
+            "46090E103/holdings/fund?idType=cusip&productType=ETF"
+        )
+        self.assertTrue(app._es_api_qqq(url))
+        self.assertFalse(app._es_api_qqq(url.replace("holdings/fund", "weightedHoldings/fund")))
+        self.assertFalse(app._es_api_qqq(url.replace("46090E103", "QQQ")))
+
+    def test_api_descarga_la_tabla_completa_sin_parametro_de_paginacion(self):
+        holdings = [
+            {
+                "ticker": f"T{i:02}",
+                "issuerName": f"Company {i}",
+                "percentageOfTotalNetAssets": 2,
+                "securityTypeName": "Common Stock",
+            }
+            for i in range(50)
+        ]
+        data = {
+            "effectiveDate": self.FECHA,
+            "totalNumberOfHoldings": len(holdings),
+            "holdings": holdings,
+        }
+        url = (
+            "https://dng-api.invesco.com/cache/v1/accounts/en_US/shareclasses/"
+            "46090E103/holdings/fund?idType=cusip&productType=ETF"
+        )
+        response = type(
+            "Response",
+            (),
+            {"status_code": 200, "url": url, "json": lambda self: data},
+        )()
+        with patch.object(app.requests, "get", return_value=response) as get:
+            tabla, fecha = app.qqq_api()
+
+        self.assertEqual(len(tabla), 50)
+        self.assertEqual(fecha, self.FECHA)
+        self.assertNotIn("loadType", get.call_args.args[0])
+        with self.assertRaisesRegex(RuntimeError, "recuento incompleto"):
+            app._tabla_qqq_oficial(
+                {"effectiveDate": self.FECHA, "totalNumberOfHoldings": 106, "holdings": holdings[:10]}
+            )
+
+    def test_api_oficial_no_acepta_posicion_sin_tipo_o_ticker_como_efectivo(self):
+        holdings = [
+            {
+                "ticker": f"T{i:02}",
+                "issuerName": f"Company {i}",
+                "percentageOfTotalNetAssets": 2,
+                "securityTypeName": "Common Stock",
+                "marketValueBase": 2,
+            }
+            for i in range(50)
+        ]
+        holdings.append(
+            {
+                "ticker": "",
+                "issuerName": "Unidentified instrument",
+                "percentageOfTotalNetAssets": None,
+                "securityTypeName": "Other",
+                "marketValueBase": 1,
+            }
+        )
+        with self.assertRaisesRegex(RuntimeError, "no están identificadas"):
+            app._tabla_qqq_oficial(
+                {"effectiveDate": self.FECHA, "totalNumberOfHoldings": 51, "holdings": holdings}
+            )
 
     def test_descarga_usa_el_csv_oficial_y_exige_tabla_completa(self):
         csv = "Holding Ticker,Name,Security Type,Weight,Date\n" + "".join(
@@ -140,17 +340,51 @@ class ProcesamientoQqqTests(unittest.TestCase):
                 "url": "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0",
             },
         )()
-        with patch.object(app.requests, "get", return_value=response) as get:
+        with patch.object(app.requests, "get", return_value=response) as get, patch.object(app.time, "sleep"):
             tabla, fecha = app.qqq_csv()
 
         self.assertEqual(len(tabla), 50)
         self.assertEqual(fecha, self.FECHA)
         self.assertIn("www.invesco.com", get.call_args.args[0])
+        self.assertEqual(get.call_count, 1)
 
         response.url = "https://www.invesco.com/us/en/financial-products/etfs.html"
-        with patch.object(app.requests, "get", return_value=response):
+        with patch.object(app.requests, "get", return_value=response) as get, patch.object(app.time, "sleep"):
             with self.assertRaisesRegex(RuntimeError, "redirigió"):
                 app.qqq_csv()
+        self.assertEqual(get.call_count, 3)
+
+    def test_csv_reintenta_un_error_transitorio_y_acepta_la_tabla_completa(self):
+        csv = "Holding Ticker,Name,Security Type,Weight,Date\n" + "".join(
+            f"T{i:02},Company {i},Equity,2,2026-11-18\n" for i in range(50)
+        )
+        no_disponible = type(
+            "Response",
+            (),
+            {
+                "status_code": 406,
+                "content": b"",
+                "text": "",
+                "url": "https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0",
+            },
+        )()
+        disponible = type(
+            "Response",
+            (),
+            {
+                "status_code": 200,
+                "content": csv.encode().ljust(2100),
+                "text": csv,
+                "url": no_disponible.url,
+            },
+        )()
+        with patch.object(app.requests, "get", side_effect=[no_disponible, disponible]) as get, patch.object(app.time, "sleep") as sleep:
+            tabla, fecha = app.qqq_csv()
+
+        self.assertEqual(len(tabla), 50)
+        self.assertEqual(fecha, self.FECHA)
+        self.assertEqual(get.call_count, 2)
+        sleep.assert_called_once_with(2)
 
 
 class ProcesamientoBrkTests(unittest.TestCase):
