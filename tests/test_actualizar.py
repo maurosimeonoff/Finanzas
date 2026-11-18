@@ -927,35 +927,6 @@ class ResultadosBrkTests(unittest.TestCase):
 
 
 class SubsidiariasTests(unittest.TestCase):
-    def test_descarga_reintenta_403_y_usa_el_host_oficial_con_www(self):
-        enlaces = "".join(
-            f'<a href="https://example.com/{i}">Negocio {i}</a>'
-            for i in range(app.SUBS_MIN_ENLACES)
-        )
-        html = (
-            "<html><head><title>LINKS TO BERKSHIRE HATHAWAY SUB. COMPANIES</title></head>"
-            f"<body>{enlaces}</body></html>"
-        )
-
-        class Response:
-            def __init__(self, status_code):
-                self.status_code = status_code
-                self.url = app.URL_SUBS
-                self.text = html
-
-            def raise_for_status(self):
-                if self.status_code >= 400:
-                    raise app.requests.HTTPError(f"HTTP {self.status_code}")
-
-        with patch.object(app.requests, "get", side_effect=[Response(403), Response(200)]) as get, \
-                patch.object(app.time, "sleep") as sleep:
-            resultado = app.descargar_subsidiarias()
-
-        self.assertEqual(len(resultado), app.SUBS_MIN_ENLACES)
-        self.assertEqual(get.call_count, 2)
-        self.assertEqual(get.call_args.args[0], "https://www.berkshirehathaway.com/subs/sublinks.html")
-        sleep.assert_called_once_with(2)
-
     def test_acepta_el_directorio_oficial_y_cuenta_nombres_unicos(self):
         enlaces = "".join(
             f'<a href="https://example.com/{i}">Negocio {i // 2}</a>'

@@ -397,9 +397,8 @@ async def brk_web(nav):
         await ctx.close()
     raise RuntimeError(f"CNBC no entregó la tabla de Berkshire: {err}")
 
-URL_SUBS = "https://www.berkshirehathaway.com/subs/sublinks.html"
+URL_SUBS = "https://berkshirehathaway.com/subs/sublinks.html"
 SUBS_MIN_ENLACES = 20
-SUBS_INTENTOS = 3
 SUBS_ENLACES_GENERICOS = {
     "click here", "click here to find out more", "open a support ticket",
     "privacy policy", "terms of use", "terms and conditions",
@@ -438,22 +437,12 @@ def extraer_subsidiarias(html, pagina=URL_SUBS):
     return resultado
 
 def descargar_subsidiarias():
-    ultimo_error = None
-    for intento in range(SUBS_INTENTOS):
-        try:
-            respuesta = requests.get(URL_SUBS, headers={"User-Agent": UA}, timeout=30)
-            respuesta.raise_for_status()
-            destino = urlparse(respuesta.url)
-            if destino.scheme != "https" or destino.hostname not in ("berkshirehathaway.com", "www.berkshirehathaway.com"):
-                raise RuntimeError("El directorio de subsidiarias redirigió fuera del sitio oficial.")
-            return extraer_subsidiarias(respuesta.text, respuesta.url)
-        except (requests.RequestException, RuntimeError) as error:
-            ultimo_error = error
-            if intento + 1 < SUBS_INTENTOS:
-                time.sleep(2 * (intento + 1))
-    raise RuntimeError(
-        f"No se pudo validar el directorio oficial tras {SUBS_INTENTOS} intentos: {ultimo_error}"
-    ) from ultimo_error
+    respuesta = requests.get(URL_SUBS, headers={"User-Agent": UA}, timeout=30)
+    respuesta.raise_for_status()
+    destino = urlparse(respuesta.url)
+    if destino.scheme != "https" or destino.hostname not in ("berkshirehathaway.com", "www.berkshirehathaway.com"):
+        raise RuntimeError("El directorio de subsidiarias redirigió fuera del sitio oficial.")
+    return extraer_subsidiarias(respuesta.text, respuesta.url)
 
 async def subs_web(nav):
     return await asyncio.get_running_loop().run_in_executor(None, descargar_subsidiarias)
