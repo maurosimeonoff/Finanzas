@@ -39,6 +39,7 @@ class PreciosTests(unittest.TestCase):
             precios = app.bajar_precios(app.BASE, app.NOMBRES_ETF, [])
 
         self.assertEqual(precios["m"]["BRK-A"]["v"], 15)
+        self.assertNotEqual(precios["m"]["BRK-A"]["v"], 10 + 15_000)
         self.assertNotIn("BRK-B", precios["a"])
 
 
@@ -634,7 +635,137 @@ class ConsolidacionTests(unittest.TestCase):
         ]
         _, listados, _ = app.armar(spy, qqq, brk, enlaces, "")
         self.assertEqual(len(listados), 2)
-        self.assertIn("Un enlace no implica una empresa única", app.HTML_T)
+        self.assertEqual(app.contar_negocios(listados), 1)
+        self.assertIn("nombre enlazado único, no por entidad legal", app.HTML_T)
+        self.assertIn("__TITULO_PRIVADOS__", app.HTML_T)
+
+
+class ResultadosBrkTests(unittest.TestCase):
+    def texto(self, ganancias="10", antes_equity="30", antes_impuestos="32",
+              impuestos="8", neto="24", atribuible="23", ingresos="100"):
+        segmentos_actuales = ["10", "15", "20", "25", "5", "8", "17", ingresos]
+        return "\n".join(
+            [
+                "CONSOLIDATED STATEMENTS OF EARNINGS",
+                f"Total revenues {ingresos} 90 300 270",
+                f"Investment gains {ganancias} 5 30 20",
+                "Total costs and expenses 80 70 240 210",
+                f"Earnings before income taxes and equity method earnings {antes_equity} 25 90 80",
+                "Equity method earnings (losses) 2 1 4 2",
+                f"Earnings before income taxes {antes_impuestos} 26 94 82",
+                f"Income tax expense {impuestos} 6 24 20",
+                f"Net earnings {neto} 20 70 62",
+                "Earnings attributable to noncontrolling interests 1 1 3 2",
+                f"Net earnings attributable to Berkshire shareholders {atribuible} 19 67 60",
+                "CONSOLIDATED STATEMENTS OF COMPREHENSIVE INCOME",
+                "Note 23. Revenues from contracts with customers",
+                "Three months ended September 30, 2026",
+                " ".join("$ " + value for value in segmentos_actuales),
+                "Nine months ended September 30, 2026",
+                "Three months ended September 30, 2025",
+                "$ 9 $ 13 $ 18 $ 24 $ 4 $ 7 $ 15 $ 90",
+                "Nine months ended September 30, 2025",
+                "Note 24. Business segment data",
+            ]
+        )
+
+    def test_parsea_y_reconcilia_el_trimestre_con_el_mismo_trimestre_anterior(self):
+        resultado = app.procesar_resultados_brk(
+            self.texto(), 3, 2026, "https://www.berkshirehathaway.com/qtrly/3rdqtr26.pdf"
+        )
+
+        self.assertEqual(resultado["periodo"], "Q3 2026")
+        self.assertEqual(resultado["comparacion"], "Q3 2025")
+        self.assertEqual(resultado["corte"], "2026-09-30")
+        self.assertEqual([s["actual"] for s in resultado["segmentos"]], [10, 15, 20, 25, 5, 8, 17])
+        self.assertEqual([s["anterior"] for s in resultado["segmentos"]], [9, 13, 18, 24, 4, 7, 15])
+        self.assertEqual(resultado["actual"]["atribuible"], 23)
+        self.assertEqual(resultado["operativo"], 20)
+        self.assertTrue(resultado["puente_completo"])
+
+    def test_limita_el_bloque_de_ingresos_aun_sin_tabla_acumulada_de_nueve_meses(self):
+        texto = self.texto().replace("September 30", "March 31")
+        texto = texto.replace("Nine months ended March 31, 2026\n", "")
+        texto = texto.replace("Nine months ended March 31, 2025\n", "")
+        resultado = app.procesar_resultados_brk(texto, 1, 2026, "fixture")
+
+        self.assertEqual(resultado["periodo"], "Q1 2026")
+        self.assertEqual(resultado["corte"], "2026-03-31")
+        self.assertEqual(sum(s["actual"] for s in resultado["segmentos"]), 100)
+
+    def test_rechaza_informe_incompleto_o_ingresos_por_segmento_no_reconciliados(self):
+        texto = self.texto()
+        with self.assertRaisesRegex(RuntimeError, "fila"):
+            app.procesar_resultados_brk(
+                texto.replace("Income tax expense 8 6 24 20\n", ""),
+                3,
+                2026,
+                "fixture",
+            )
+        with self.assertRaisesRegex(RuntimeError, "segmentos contra ingresos"):
+            app.procesar_resultados_brk(
+                texto.replace("$ 17 $ 100", "$ 19 $ 100"),
+                3,
+                2026,
+                "fixture",
+            )
+        with self.assertRaisesRegex(RuntimeError, "nota 23"):
+            app.procesar_resultados_brk(
+                texto.replace("Note 23. Revenues from contracts with customers", "Note 23 missing"),
+                3,
+                2026,
+                "fixture",
+            )
+
+    def test_no_presenta_como_flujo_positivo_una_perdida_de_inversion(self):
+        resultado = app.procesar_resultados_brk(
+            self.texto(ganancias="(5)", antes_equity="15", antes_impuestos="17",
+                       impuestos="8", neto="9", atribuible="8"),
+            3,
+            2026,
+            "fixture",
+        )
+
+        self.assertFalse(resultado["puente_completo"])
+        self.assertEqual(resultado["actual"]["ganancias_inversion"], -5)
+        self.assertEqual(resultado["actual"]["neto"], 9)
+
+    def test_no_admite_ingresos_negativos_de_segmentos_como_flujos(self):
+        texto = self.texto(
+            ingresos="80", antes_equity="10", antes_impuestos="12", impuestos="8",
+            neto="4", atribuible="3",
+        ).replace("$ 10 $ 15", "$ (10) $ 15")
+        resultado = app.procesar_resultados_brk(texto, 3, 2026, "fixture")
+
+        self.assertFalse(resultado["segmentos_no_negativos"])
+        self.assertFalse(resultado["puente_completo"])
+        self.assertEqual(resultado["segmentos"][0]["actual"], -10)
+
+    def test_descubre_el_informe_mas_reciente_sin_ordenar_mal_anios_de_dos_digitos(self):
+        respuestas = [
+            type("Response", (), {"text": (
+                '<a href="/qtrly/links3rdqtr99.html">1999</a>'
+                '<a href="/qtrly/links3rdqtr25.html">2025</a>'
+                '<a href="/qtrly/links2ndqtr26.html">Q2 2026</a>'
+                '<a href="/qtrly/links3rdqtr26.html">Q3 2026</a>'
+            ), "content": b"", "url": "https://www.berkshirehathaway.com/reports.html",
+                                  "raise_for_status": lambda self: None})(),
+            type("Response", (), {"text": '<a href="3rdqtr26.pdf">PDF</a>',
+                                  "content": b"", "url": "https://www.berkshirehathaway.com/qtrly/links3rdqtr26.html",
+                                  "raise_for_status": lambda self: None})(),
+            type("Response", (), {"text": "", "content": b"%PDF fixture",
+                                  "url": "https://www.berkshirehathaway.com/qtrly/3rdqtr26.pdf",
+                                  "raise_for_status": lambda self: None})(),
+        ]
+        fake_reader = type("Reader", (), {"pages": []})()
+        with patch.object(app.requests.Session, "get", side_effect=respuestas), \
+                patch("pypdf.PdfReader", return_value=fake_reader), \
+                patch.object(app, "procesar_resultados_brk", return_value={"periodo": "Q3 2026"}) as parsear:
+            resultado = app.bajar_resultados_brk()
+
+        self.assertEqual(resultado["periodo"], "Q3 2026")
+        self.assertEqual(parsear.call_args.args[1:3], (3, 2026))
+        self.assertEqual(parsear.call_args.args[3], "https://www.berkshirehathaway.com/qtrly/3rdqtr26.pdf")
 
 
 if __name__ == "__main__":

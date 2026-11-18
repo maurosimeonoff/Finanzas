@@ -11,13 +11,13 @@ Otro_activo = globals().get("Otro_activo", "")
 # CRITERIOS DE DISEÑO (leer antes de modificar; vigentes para cualquier mejora futura)
 # Objetivo: ponderación económica final de una cartera SPY + QQQ + BRK desarmando cada una en sus empresas (descomposición recursiva).
 # Forma:    una sola celda oculta (formulario) y una sola salida; la salida es una página HTML autosuficiente (datos embebidos, Plotly por CDN).
-# Idioma:   castellano rioplatense, cero anglicismos en tablas y gráficos ("Efectivo", "Residual de BRK", "Resto", "Símbolo"); mayúscula solo inicial.
+# Idioma:   castellano rioplatense, cero anglicismos en tablas y gráficos ("Efectivo", "Privados BRK", "Resto", "Símbolo"); mayúscula solo inicial.
 # Números:  asignaciones SPY/QQQ/BRK en enteros (60%); todo lo demás con un decimal (x.x%); punto decimal; nunca mezclar "pp" con "%".
 # Valor:    no mostrar lo que no agrega valor ni repetir información (la fecha de consulta aparece una sola vez); sin títulos ni ejes redundantes.
 # Selector: se fija SPY (QQQ y BRK se reparten el resto en su proporción); luego QQQ (solo se ajusta BRK; SPY no se toca); si se mueve BRK se ajustan
 #           SPY y QQQ. Unidad mínima 1%. Siempre suma 100. Todo se recalcula en el navegador, sin volver a consultar las fuentes.
-# Gráficos: Cartera global (asignación), Ponderación en la cartera (10 primeros por fuente, barras apiladas), Composición final (10 primeros + Resto).
-#           Los 10 incluyen siempre "Efectivo" y "Residual de BRK". Colores: SPY #6FA3DB, QQQ #F5973A, BRK #6CBF6A. Nada recortado en ningún ancho.
+# Gráficos: Cartera (asignación), Ponderación (10 primeros por fuente, barras apiladas), Consolidado (10 primeros + Resto).
+#           Los 10 incluyen siempre "Efectivo" y "Privados BRK". Colores: SPY #6FA3DB, QQQ #F5973A, BRK #6CBF6A. Nada recortado en ningún ancho.
 # Cálculo:  aporte = peso en la fuente × asignación de la fuente; BRK dentro de SPY se reemplaza por la composición de BRK (sin doble conteo);
 #           doble clase por símbolo canónico; no se reescalan fuentes; diferencias menores se muestran sin asignar; "Residual de BRK" =
 #           capitalización − acciones − efectivo bruto (residual, no valuación contable); futuros y colaterales de QQQ no son efectivo.
@@ -28,24 +28,24 @@ Otro_activo = globals().get("Otro_activo", "")
 #           hábil de la consulta (si es fin de semana, el viernes); efectivo = último balance trimestral; se verifica contra el TOTAL de CNBC.
 # Eficiencia: descargas en paralelo, un solo navegador, sin recálculo en Python al mover selectores, JSON mínimo, tabla completa solo al abrirla.
 # Publicación: GitHub Pages desde /docs; GitHub Actions regenera la página todos los días a las 18:00 (hora de Buenos Aires). Salida siempre en
-#           modo nocturno (estética Claude: fondo carbón cálido #262624, texto crema #faf9f5, acento terracota #d97757, títulos en serif),
+#           modo nocturno de alto contraste (azul petróleo, tipografía Inter/system-ui, acento oro y verde),
 #           legible en pantallas anchas y en celulares, con presentación cuidada para lectores no técnicos.
-# Comparativa: pestaña "Comparativa cuantitativa" en la misma página. Activos: SPY, QQQ, BRK (BRK-A en Yahoo: 1 A = 1.500 B; retorno % equivalente, más historia), Cartera global y uno más (catálogo).
-#           Cartera global = SPY/QQQ/BRK con los pesos del selector, rebalanceo trimestral sin fricciones. Siempre precios ajustados (retorno total).
-#           Δ por defecto = Cartera global menos SPY, pero se elige cualquier par. Métricas: retorno total (0 dec.), rendimiento anual, volatilidad anual y
-#           negativa, distancia al máximo del rango (1 dec.), máxima caída del rango (0 dec.; el pico se mide dentro del rango analizado), rendimiento/volatilidad, correlación, beta y volumen promedio de 3 meses.
+# Comparativa: SPY, QQQ, BRK (BRK-A en Yahoo: 1 A = 1.500 B; retorno % equivalente, más historia), Cartera global y uno más (catálogo).
+#           Cartera = SPY/QQQ/BRK con los pesos del selector, rebalanceo trimestral sin fricciones. Siempre precios ajustados (retorno total).
+#           Δ por defecto = Cartera menos SPY, pero se elige cualquier par. Incluye retornos, riesgos, correlación, beta y valor negociado en M USD.
+#           Rangos: 1 día, 1 semana, 1/3/6 meses, En el año, 1/3/5/10 años y Todo. Markowitz long-only maximiza CAGR / volatilidad anualizada;
+#           requiere 60 ruedas y advierte que anualizar ventanas menores a un año amplifica el ruido.
 #           Botones: Establecer (guarda en el navegador), Portafolio (SPY+QQQ+BRK+Cartera global, Δ vs SPY), Vacío (solo el par del Δ).
 #           Los precios se descargan en cada ejecución (diaria, 18:00) y se embeben; la página estática no consulta Yahoo: otro símbolo cualquiera solo en Colab
 #           (parámetro Otro_activo). Sin recorte de historia para los activos del catálogo. El selector y la comparativa guardan su estado con "Establecer".
-# Interfaz: arriba solo lo esencial (selector + 3 gráficos); Metodología, Tabla completa y Negocios privados de BRK van abajo, colapsados. Gráficos sin
-#           zoom ni arrastre de ejes (eje fijo, nunca valores negativos de ponderación).
+# Interfaz: navegación de cinco pantallas: Cartera, Comparativa, Metodología, Privados y Resultados BRK. Gráficos de cartera sin zoom; la comparativa ajusta su rango temporal.
 # =====================================================================================================
 
 import asyncio, glob, importlib.util, io, json, os, re, subprocess, sys, time, warnings
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from io import StringIO
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 import numpy as np, pandas as pd, requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -534,6 +534,57 @@ async def qqq_total(nav, loop):
         except Exception as e: errs.append(f"{nombre}: {e}")
     raise RuntimeError(" | ".join(errs))
 
+def bajar_resultados_brk():
+    informes = "https://www.berkshirehathaway.com/reports.html"
+    sesion = requests.Session()
+    sesion.mount("https://", HTTPAdapter(max_retries=Retry(
+        total=2, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504]
+    )))
+    cabeceras = {"User-Agent": UA, "Accept": "text/html,application/pdf,*/*"}
+
+    def es_oficial(url):
+        partes = urlparse(url)
+        return partes.scheme == "https" and partes.hostname == "www.berkshirehathaway.com"
+
+    def obtener(url):
+        if not es_oficial(url):
+            raise RuntimeError("Berkshire: se rechazó un enlace fuera del sitio oficial.")
+        respuesta = sesion.get(url, headers=cabeceras, timeout=30)
+        respuesta.raise_for_status()
+        if not es_oficial(respuesta.url):
+            raise RuntimeError("Berkshire: la descarga redirigió fuera del sitio oficial.")
+        return respuesta
+
+    pagina = obtener(informes).text
+    candidatos = []
+    for href in re.findall(r'href\s*=\s*["\']([^"\']+)["\']', pagina, re.I):
+        m = re.search(r"links(1st|2nd|3rd)qtr(\d{2})\.html", href, re.I)
+        if m:
+            trimestre = {"1st": 1, "2nd": 2, "3rd": 3}[m.group(1).lower()]
+            dos_digitos = int(m.group(2))
+            anio = 1900 + dos_digitos if dos_digitos >= 80 else 2000 + dos_digitos
+            url = urljoin(informes, href)
+            if es_oficial(url):
+                candidatos.append((anio, trimestre, url))
+    if not candidatos:
+        raise RuntimeError("Berkshire: no se encontraron informes trimestrales oficiales.")
+    anio, trimestre, pagina_trimestral = max(candidatos)
+    html = obtener(pagina_trimestral).text
+    pdfs = [urljoin(pagina_trimestral, href) for href in
+            re.findall(r'href\s*=\s*["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']', html, re.I)]
+    if len(pdfs) != 1:
+        raise RuntimeError(f"Berkshire Q{trimestre} {anio}: se esperaba un PDF oficial y se encontraron {len(pdfs)}.")
+    respuesta = obtener(pdfs[0])
+    if len(respuesta.content) > 20_000_000 or not respuesta.content.startswith(b"%PDF"):
+        raise RuntimeError("Berkshire: el informe trimestral descargado no es un PDF válido.")
+    try:
+        from pypdf import PdfReader
+    except ImportError as e:
+        raise RuntimeError("Berkshire: falta pypdf para leer el informe trimestral oficial.") from e
+    lector = PdfReader(io.BytesIO(respuesta.content))
+    texto = "\n".join(p.extract_text() or "" for p in lector.pages)
+    return procesar_resultados_brk(texto, trimestre, anio, pdfs[0])
+
 async def traer():
     pw_listo()
     from playwright.async_api import async_playwright
@@ -764,6 +815,132 @@ def proc_brk(htmls, cuerpo):
                 cash_neto_cambio=cash_neto_cambio, cash_neto_cambio_desde=cash_neto_cambio_desde,
                 total_cnbc=total_cnbc, dif_total=dif_total, lineas=len(emp))
 
+BRK_SEGMENTOS = ("BNSF", "Energía (BHE)", "Manufactura", "Servicios y comercio minorista", "Pilot",
+                 "McLane", "Seguros, corporativo y otros")
+BRK_FILAS_RESULTADOS = {
+    "ingresos": ("Total revenues",),
+    "ganancias_inversion": ("Investment gains", "Investment gains (losses)"),
+    "gastos": ("Total costs and expenses",),
+    "antes_equity": ("Earnings before income taxes and equity method earnings",),
+    "equity": ("Equity method earnings (losses)", "Equity method earnings"),
+    "antes_impuestos": ("Earnings before income taxes",),
+    "impuestos": ("Income tax expense", "Income taxes"),
+    "neto": ("Net earnings",),
+    "no_controlantes": ("Earnings attributable to noncontrolling interests",),
+    "atribuible": ("Net earnings attributable to Berkshire shareholders",
+                   "Net earnings attributable to Berkshire Hathaway shareholders"),
+}
+
+def _numero_pdf(token):
+    s = str(token).strip().replace(",", "").replace("\u2212", "-")
+    if s in ("-", "\u2013", "\u2014"):
+        return 0.0
+    negativo = s.startswith("(") and s.endswith(")")
+    s = s.strip("()")
+    valor = float(s)
+    return -valor if negativo else valor
+
+def _fila_pdf_resultados(texto, alternativas):
+    todas = [etiqueta for grupo in BRK_FILAS_RESULTADOS.values() for etiqueta in grupo]
+    for linea in texto.splitlines():
+        linea = " ".join(linea.split())
+        for etiqueta in alternativas:
+            if (linea.casefold().startswith(etiqueta.casefold())
+                    and not any(len(otra) > len(etiqueta)
+                                and otra.casefold().startswith(etiqueta.casefold())
+                                and linea.casefold().startswith(otra.casefold())
+                                for otra in todas)):
+                valores = re.findall(r"\(?-?[\d,]+(?:\.\d+)?\)?|[\u2013\u2014-]", linea[len(etiqueta):])
+                if len(valores) >= 4:
+                    return [_numero_pdf(v) for v in valores[:4]]
+    raise RuntimeError(f"Berkshire: el estado trimestral no contiene la fila «{alternativas[0]}».")
+
+def _bloque_segmentos(texto, anio):
+    inicio = re.search(r"Note 23\.\s*Revenues from contracts with customers", texto, re.I)
+    if not inicio:
+        raise RuntimeError("Berkshire: falta la nota oficial de ingresos por segmento (nota 23).")
+    fin = re.search(r"Note 24\.\s*Business segment data", texto[inicio.end():], re.I)
+    if not fin:
+        raise RuntimeError("Berkshire: falta el límite de la nota de ingresos por segmento.")
+    nota = texto[inicio.end():inicio.end() + fin.start()]
+    periodo = re.search(
+        rf"Three months ended\s+(?:March|June|September)\s+\d{{1,2}},?\s+{anio}\b(.*?)"
+        r"(?=(?:(?:First\s+)?(?:six|nine)\s+months ended)|Three months ended|$)",
+        nota, re.I | re.S,
+    )
+    if not periodo:
+        raise RuntimeError(f"Berkshire: falta el desglose de ingresos del mismo trimestre de {anio}.")
+    patron = r"\$\s*(\(?-?[\d,]+(?:\.\d+)?\)?|[\u2013\u2014-])"
+    encontrados = list(re.finditer(patron, periodo.group(1)))
+    filas = []
+    for i in range(len(encontrados) - 7):
+        grupo = encontrados[i:i + 8]
+        tramo = periodo.group(1)[grupo[0].start():grupo[-1].end()]
+        if tramo.count("$") == 8 and len(tramo) < 500:
+            filas.append([_numero_pdf(m.group(1)) for m in grupo])
+    if not filas:
+        raise RuntimeError(f"Berkshire: no se pudo leer la fila total de ingresos por segmento de {anio}.")
+    valores = filas[-1]
+    return valores[:7], valores[7]
+
+def procesar_resultados_brk(texto, trimestre, anio, fuente):
+    inicio = re.search(r"^CONSOLIDATED STATEMENTS OF EARNINGS\s*$", texto, re.M)
+    if not inicio:
+        raise RuntimeError("Berkshire: falta el estado consolidado de resultados.")
+    fin = re.search(r"^CONSOLIDATED STATEMENTS OF COMPREHENSIVE INCOME\s*$", texto[inicio.end():], re.M)
+    if not fin:
+        raise RuntimeError("Berkshire: el estado consolidado de resultados está incompleto.")
+    estado = texto[inicio.end():inicio.end() + fin.start()]
+    filas = {k: _fila_pdf_resultados(estado, etiquetas) for k, etiquetas in BRK_FILAS_RESULTADOS.items()}
+    actuales, anteriores = {}, {}
+    for clave, valores in filas.items():
+        actuales[clave], anteriores[clave] = valores[0], valores[1]
+    actual_segmentos, total_segmentos = _bloque_segmentos(texto, anio)
+    previo_segmentos, total_previo_segmentos = _bloque_segmentos(texto, anio - 1)
+
+    def reconciliar(datos, segmentos, total_segmentos, periodo):
+        checks = (
+            (sum(segmentos), datos["ingresos"], "segmentos contra ingresos"),
+            (datos["ingresos"] - datos["gastos"] + datos["ganancias_inversion"], datos["antes_equity"], "resultado antes de equity"),
+            (datos["antes_equity"] + datos["equity"], datos["antes_impuestos"], "resultado antes de impuestos"),
+            (datos["antes_impuestos"] - datos["impuestos"], datos["neto"], "ganancia neta"),
+            (datos["neto"] - datos["no_controlantes"], datos["atribuible"], "ganancia atribuible"),
+            (total_segmentos, datos["ingresos"], "total de la tabla de segmentos"),
+        )
+        for observado, esperado, nombre in checks:
+            if not np.isclose(observado, esperado, atol=1.0, rtol=0):
+                raise RuntimeError(
+                    f"Berkshire {periodo}: no reconcilia {nombre} "
+                    f"({observado:,.0f} frente a {esperado:,.0f} millones)."
+                )
+
+    reconciliar(actuales, actual_segmentos, total_segmentos, f"Q{trimestre} {anio}")
+    reconciliar(anteriores, previo_segmentos, total_previo_segmentos, f"Q{trimestre} {anio - 1}")
+    operativo = actuales["ingresos"] - actuales["gastos"]
+    segmentos_no_negativos = all(valor >= 0 for valor in actual_segmentos)
+    puente_completo = all(actuales[k] >= 0 for k in (
+        "ingresos", "gastos", "antes_equity",
+        "ganancias_inversion", "equity", "antes_impuestos", "impuestos", "neto",
+        "no_controlantes", "atribuible",
+    )) and operativo >= 0 and segmentos_no_negativos
+    mes, dia = {1: (3, 31), 2: (6, 30), 3: (9, 30)}[trimestre]
+    return {
+        "periodo": f"Q{trimestre} {anio}",
+        "comparacion": f"Q{trimestre} {anio - 1}",
+        "corte": f"{anio}-{mes:02d}-{dia:02d}",
+        "unidad": "US$ millones",
+        "fuente": fuente,
+        "segmentos": [
+            {"nombre": nombre, "actual": valor, "anterior": previo}
+            for nombre, valor, previo in zip(BRK_SEGMENTOS, actual_segmentos, previo_segmentos)
+        ],
+        "actual": actuales,
+        "anterior": anteriores,
+        "operativo": operativo,
+        "segmentos_no_negativos": segmentos_no_negativos,
+        "puente_completo": puente_completo,
+    }
+
 def armar(S, Q, B, subs, subs_err):
     def fuente(datos, clave):
         w = datos["w"].astype(float).copy()
@@ -802,6 +979,10 @@ def armar(S, Q, B, subs, subs_err):
                sin_tna_S=S.get("peso_sin_tna_derivado", 0.0), sin_tna_Q=Q.get("peso_sin_tna_derivado", 0.0))
     return D, lst, gap
 
+def contar_negocios(subs):
+    return len({re.sub(r"\s+", " ", str(nombre)).strip().casefold()
+                for nombre, _ in subs if str(nombre).strip()})
+
 GITHUB_OWNER, GITHUB_REPO = "maurosimeonoff", "Finanzas"
 URL_WEB = f"https://{GITHUB_OWNER}.github.io/{GITHUB_REPO}/"
 
@@ -822,7 +1003,7 @@ def enteros(v):  # reparte 100 en enteros (método del mayor resto)
 
 def pagina(frag):  # envoltorio para publicar como página web independiente
     return ('<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>Cartera global: SPY + QQQ + BRK</title><style>html,body{min-height:100%;margin:0}body{background:#1f1e1d;padding:0}</style></head><body>' + frag + '</body></html>')
+            '<title>Cartera: SPY + QQQ + BRK</title><style>html,body{min-height:100%;margin:0}body{background:#0b1116;padding:0}</style></head><body>' + frag + '</body></html>')
 
 BASE = ["SPY", "QQQ", "BRK-A", "BRK-B"]
 ETFS_EXTRA = ["IWM", "EFA", "EEM", "TLT", "GLD", "VNQ"]
@@ -882,65 +1063,76 @@ def bajar_precios(tks, nombres, extras):  # precios ajustados diarios desde Yaho
 # ---------- salida ----------
 HTML_T = r'''
 <style>
-#w{--bg:#262624;--sf:#30302e;--bd:#3d3d3a;--tx:#faf9f5;--t2:#c2c0b6;--t3:#9a988f;--ac:#d97757;color-scheme:dark;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--tx);background:var(--bg);padding:12px;box-sizing:border-box;width:100%;min-height:100vh;margin:0;display:grid;grid-template-columns:168px minmax(0,1fr);gap:12px}
+#w{--bg:#0b1116;--sf:#111a20;--bd:#293841;--tx:#f3f7f8;--t2:#d0dbe0;--t3:#a5b4bc;--ac:#e5b940;--active:#80e28e;color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:14px;color:var(--tx);background:var(--bg);padding:8px;box-sizing:border-box;width:100%;min-height:100vh;margin:0;display:grid;grid-template-columns:148px minmax(0,1fr);gap:8px}
 #w *{box-sizing:border-box}
-#w .nav{position:sticky;top:12px;align-self:start;height:calc(100vh - 24px);display:flex;flex-direction:column;gap:6px;padding:10px;background:var(--sf);border:1px solid var(--bd);border-radius:12px}
-#w .brand{font:500 19px/1.2 "Iowan Old Style","Palatino Linotype",Georgia,serif;padding:5px 8px 14px;color:var(--tx)}
-#w .nav button{width:100%;padding:10px 9px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--t2);font:600 13px Inter,system-ui,sans-serif;text-align:left;cursor:pointer}
+#w .nav{position:sticky;top:8px;align-self:start;height:calc(100vh - 16px);display:flex;flex-direction:column;gap:5px;padding:8px;background:var(--sf);border:1px solid var(--bd);border-radius:12px}
+#w .brand{font:600 20px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;padding:5px 8px 14px;color:var(--tx)}
+#w .nav button{width:100%;padding:11px 9px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--t2);font:600 14px Inter,ui-sans-serif,system-ui,sans-serif;text-align:left;cursor:pointer}
 #w .nav button:hover{border-color:var(--bd);color:var(--tx)}
-#w .nav button.on{background:var(--ac);color:#1f1e1d;border-color:var(--ac)}
+#w .nav button.on{background:var(--active);color:#08120d;border-color:var(--active)}
 #w .pages{min-width:0}
 #w .view{min-width:0}
-#w h1{font:500 27px/1.15 "Iowan Old Style","Palatino Linotype",Georgia,"Times New Roman",serif;margin:0 0 4px;letter-spacing:-.3px;color:var(--tx)!important}
-#w h2{font-size:12px;margin:22px 0 8px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--t3)!important}
-#w .sub{font-size:12.5px;color:var(--t3);margin-bottom:12px}
-.ctl{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:9px 12px}
-.ctl .it{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:650}
-.ctl input[type=range]{width:160px;accent-color:var(--ac)}
-.ctl input[type=number]{width:58px;padding:4px 6px;border:1px solid var(--bd);border-radius:7px;font-size:13px;background:#1f1e1d!important;color:var(--tx)!important}
-.ctl button{font-size:12px;border:1px solid var(--bd);background:var(--bg)!important;color:var(--t2)!important;border-radius:7px;padding:5px 12px;cursor:pointer}
+#w h1{font:550 30px/1.15 Inter,ui-sans-serif,system-ui,sans-serif;margin:0 0 4px;letter-spacing:-.35px;color:var(--tx)!important}
+#w h2{font-size:13px;margin:18px 0 7px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--t3)!important}
+#w .sub{font-size:14px;color:var(--t2);margin-bottom:10px;line-height:1.35}
+.ctl{display:flex;gap:7px;align-items:center;flex-wrap:wrap;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:6px 8px}
+.ctl .it{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:650}
+.ctl input[type=range]{width:120px;accent-color:var(--ac)}
+.ctl input[type=number]{width:58px;padding:4px 6px;border:1px solid var(--bd);border-radius:7px;font-size:14px;background:#0b1116!important;color:var(--tx)!important}
+.ctl button{font-size:13px;border:1px solid var(--bd);background:var(--bg)!important;color:var(--t2)!important;border-radius:7px;padding:5px 11px;cursor:pointer}
 .ctl button:hover{border-color:var(--ac);color:var(--tx)!important}
-.gr{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(320px,1.4fr) minmax(250px,1fr);gap:8px;margin-top:10px;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:10px 8px 6px}
-.gr h3{font:500 16px/1.2 "Iowan Old Style","Palatino Linotype",Georgia,serif;margin:0;text-align:center;color:var(--tx)!important}
-.gr p{font-size:12px;color:var(--t3);margin:2px 0 0;text-align:center}
+.gr{display:grid;grid-template-columns:minmax(160px,.8fr) minmax(280px,1.4fr) minmax(220px,1fr);gap:6px;margin-top:8px;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:7px 6px 4px}
+.gr h3{font:600 17px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;margin:0;text-align:center;color:var(--tx)!important}
+.gr p{font-size:13px;color:var(--t2);margin:2px 0 0;text-align:center}
 .g2{display:grid;grid-template-columns:1fr 1.4fr;gap:26px}@media(max-width:980px){.g2{grid-template-columns:1fr}}
-#w table{border-collapse:collapse;width:100%;font-size:12px;font-variant-numeric:tabular-nums;background:transparent;color:var(--tx)}
-#w th{text-align:right;padding:6px 8px;border-bottom:1px solid var(--ac);background:var(--bg);position:sticky;top:0;font-weight:650;color:var(--tx)}
-#w td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--bd);color:var(--t2)}
+#w table{border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums;background:transparent;color:var(--tx)}
+#w th{text-align:right;padding:5px 7px;border-bottom:1px solid var(--ac);background:var(--bg);position:sticky;top:0;font-weight:700;color:var(--tx)}
+#w td{text-align:right;padding:4px 7px;border-bottom:1px solid var(--bd);color:var(--t2)}
 #w .tf th:nth-child(-n+3),#w .tf td:nth-child(-n+3),#w .kp td:first-child,#w .kp th:first-child{text-align:left}
 #w .kp td:first-child{white-space:nowrap;color:var(--tx)}#w .kp td:nth-child(2),#w .kp td:nth-child(3){text-align:left}#w .kp.n td:nth-child(2){text-align:right}
 #w .tf td b{color:var(--tx)}
 .sc{max-height:440px;overflow:auto;border:1px solid var(--bd);border-radius:10px}
-.sb{columns:3 230px;column-gap:26px;font-size:12px;line-height:1.6;color:var(--t2)}.sb div{break-inside:avoid}.sb a{color:var(--ac);text-decoration:none}.sb a:hover{text-decoration:underline}
-.w{color:#f0867a}.nt{font-size:11px;color:var(--t3);line-height:1.55;margin-top:18px;border-top:1px solid var(--bd);padding-top:10px}
+.sb{columns:3 230px;column-gap:24px;font-size:13px;line-height:1.5;color:var(--t2)}.sb div{break-inside:avoid}.sb a{color:var(--ac);text-decoration:none}.sb a:hover{text-decoration:underline}
+.w{color:#ff8585}.nt{font-size:12px;color:var(--t3);line-height:1.4;margin-top:14px;border-top:1px solid var(--bd);padding-top:8px}
 .S{color:#6FA3DB}.Q{color:#F5973A}.B{color:#6CBF6A}.S,.Q,.B{font-weight:650}
-details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;margin:22px 0 8px;color:var(--t3)}details>summary:hover{color:var(--tx)}
+details>summary{cursor:pointer;font-size:13px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin:18px 0 7px;color:var(--t2)}details>summary:hover{color:var(--tx)}
 
-.ctl select{background:#1f1e1d!important;color:var(--tx)!important;border:1px solid var(--bd);border-radius:7px;padding:4px 6px;font-size:12.5px;max-width:190px}
+.ctl select{background:#0b1116!important;color:var(--tx)!important;border:1px solid var(--bd);border-radius:7px;padding:4px 6px;font-size:13px;max-width:190px}
 .ctl label.it{font-weight:600;color:var(--t2)}
-.chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:650;padding:4px 11px;border:1px solid var(--bd);border-radius:999px;cursor:pointer;margin-right:6px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:650;padding:4px 9px;border:1px solid var(--bd);border-radius:999px;cursor:pointer;margin-right:5px}
 .chip input{accent-color:var(--ac)}
-.cmp{display:grid;grid-template-columns:fit-content(58%) minmax(0,1fr);gap:14px;margin-top:14px}@media(max-width:1100px){.cmp{grid-template-columns:1fr}}
-.cmp>div{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:10px 12px;overflow:auto}
-#w .cmp th,#w .cmp td{white-space:nowrap}#w .cmp td:first-child,#w .cmp th:first-child{text-align:left}
+.cmp{display:grid;grid-template-columns:minmax(300px,.8fr) minmax(0,1.45fr);gap:8px;margin-top:8px;height:calc(100vh - 245px);min-height:0}
+.cmp>div{min-width:0;min-height:0;background:var(--sf);border:1px solid var(--bd);border-radius:10px;padding:6px 7px;overflow:hidden}
+#ct{table-layout:fixed}#ct th:first-child,#ct td:first-child{width:40%;white-space:normal;text-align:left;overflow-wrap:anywhere}
+#w .cmp th,#w .cmp td{white-space:nowrap;padding:1px 2px;font-size:10.5px;line-height:1.2}#w .cmp td:first-child,#w .cmp th:first-child{white-space:normal}
+#w .cmp h2{margin-bottom:4px}#w #cd{font-size:11px;line-height:1.25;color:var(--t2)}
+#opt{width:100%;height:190px;min-height:150px}
+#optNote{font-size:10.5px;line-height:1.25;margin:2px 0 0;color:var(--t2)}
+#cch{width:100%}
 .method-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-.mt{min-width:0;border:1px solid var(--bd);border-radius:10px;padding:9px 12px;background:var(--sf);font-size:11.5px;line-height:1.35;color:var(--t2)}
-.mt h4{margin:0 0 6px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--ac);font-weight:650}
+.mt{min-width:0;border:1px solid var(--bd);border-radius:10px;padding:8px 10px;background:var(--sf);font-size:13px;line-height:1.35;color:var(--t2)}.mt p{margin:0}
+.mt h4{margin:0 0 5px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--ac);font-weight:700}
 .mt ol,.mt ul{margin:0;padding-left:17px}.mt li{margin:2px 0}.mt b{color:var(--tx)}
-.mt td,.mt th{padding:3px 5px!important;font-size:10.5px}#w .mt th{position:static}
-.method-grid .mt:last-child{grid-column:1/-1}
-.method-grid .mt:last-child ul{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:20px}
-@media(max-width:1180px){.gr{grid-template-columns:minmax(180px,.8fr) minmax(0,1.4fr)}.gr>div:nth-child(3){grid-column:1/-1}}
-@media(max-width:900px){#w{grid-template-columns:132px minmax(0,1fr);gap:8px;padding:8px}.method-grid{grid-template-columns:1fr}.method-grid .mt:last-child{grid-column:auto}.method-grid .mt:last-child ul{grid-template-columns:1fr}}
-@media(max-width:680px){#w{grid-template-columns:104px minmax(0,1fr);gap:6px;padding:6px}#w .nav{padding:6px;gap:4px}#w .brand{font-size:16px;padding:5px 4px 10px}#w .nav button{font-size:11px;padding:8px 6px}.gr{grid-template-columns:1fr}.gr>div:nth-child(3){grid-column:auto}.ctl{gap:7px;padding:8px}.ctl input[type=range]{width:90px}.method-grid .mt:last-child ul{grid-template-columns:1fr}}
+.mt td,.mt th{padding:3px 5px!important;font-size:12px}#w .mt th{position:static}
+#brkFlow{width:100%;height:calc(100vh - 220px);min-height:320px}
+#brkSummary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:7px;margin-top:8px}
+#brkSummary>div{background:var(--sf);border:1px solid var(--bd);border-radius:8px;padding:8px 10px;color:var(--t2);font-size:12px;line-height:1.35}
+#brkSummary b{display:block;color:var(--tx);font-size:14px;margin-bottom:3px}
+.flow-note{font-size:12px;color:var(--t3);line-height:1.4;margin-top:6px}
+@media(max-width:900px){#brkSummary{grid-template-columns:repeat(2,minmax(0,1fr))}#brkSummary>div{padding:5px 7px;font-size:11px}#brkSummary b{font-size:12px;margin-bottom:1px}}
+@media(max-width:900px){.cmp{grid-template-columns:1fr;height:auto}.cmp>div{overflow:visible}.cmp>div:last-child{min-height:420px}}
+@media(max-width:1180px){.gr{grid-template-columns:minmax(160px,.8fr) minmax(0,1.4fr)}.gr>div:nth-child(3){grid-column:1/-1}}
+@media(max-width:900px){#w{grid-template-columns:120px minmax(0,1fr);gap:6px;padding:6px}.method-grid{grid-template-columns:1fr}}
+@media(max-width:680px){#w{grid-template-columns:104px minmax(0,1fr);gap:6px;padding:6px}#w .nav{padding:6px;gap:4px}#w .brand{font-size:17px;padding:5px 4px 10px}#w .nav button{font-size:12px;padding:8px 6px}.gr{grid-template-columns:1fr}.gr>div:nth-child(3){grid-column:auto}.ctl{gap:7px;padding:8px}.ctl input[type=range]{width:90px}}
 </style>
 <div id="w">
 <aside class="nav" aria-label="Secciones de la cartera">
  <div class="brand">Finanzas</div>
- <button id="nav1" class="on">Global</button>
- <button id="nav2">Comparativa</button>
- <button id="nav3">Metodología</button>
- <button id="nav4">Privados</button>
+ <button id="nav1" class="on" data-purpose="ajustar la mezcla SPY/QQQ/BRK y ver su exposición consolidada">Cartera</button>
+ <button id="nav2" data-purpose="comparar retorno, riesgo y liquidez; explorar combinaciones históricas sin ventas cortas">Comparativa</button>
+ <button id="nav3" data-purpose="consultar fuentes, fechas, cálculos y controles">Metodología</button>
+ <button id="nav4" data-purpose="ver las empresas enlazadas por CNBC en la cartera pública de Berkshire">Privados</button>
+ <button id="nav5" data-purpose="explorar ingresos, gastos y resultados trimestrales publicados por Berkshire">Resultados</button>
 </aside>
 <main class="pages">
 <section id="p1" class="view">
@@ -952,11 +1144,11 @@ details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06
  <button id="es" title="Guarda esta ponderación como base para las próximas consultas en este navegador">Establecer</button><button id="eq">Equiponderar</button>
 </div>
 <div class="gr">
- <div><h3>Cartera global</h3><p id="s1"></p><div id="g1"></div></div>
- <div><h3>Ponderación en la cartera</h3><p id="s2"></p><div id="g2"></div></div>
- <div><h3>Composición final consolidada</h3><p id="s3"></p><div id="g3"></div></div>
+ <div><h3>Cartera</h3><p id="s1"></p><div id="g1"></div></div>
+ <div><h3>Ponderación</h3><p id="s2"></p><div id="g2"></div></div>
+ <div><h3>Consolidado</h3><p id="s3"></p><div id="g3"></div></div>
 </div>
-<details id="dt"><summary>Tabla completa de la cartera global</summary><div class="sc"><table class="tf" id="tf"></table></div></details>
+<details id="dt"><summary id="tableTitle">Tabla completa de la cartera global</summary><div class="sc"><table class="tf" id="tf"></table></div></details>
 </section>
 <section id="p2" class="view" style="display:none">
 <h1>Comparativa</h1><div class="sub" id="cs"></div>
@@ -964,15 +1156,16 @@ details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06
  <span id="chips"></span>
  <label class="it">Otro <select id="cx"></select></label>
  <label class="it">Δ <select id="da"></select> menos <select id="db"></select></label>
- <label class="it"><input type="checkbox" id="lg" style="accent-color:#d97757"> Escala log</label>
+ <label class="it"><input type="checkbox" id="lg" style="accent-color:#e5b940"> Escala log</label>
  <button id="ce" title="Guarda esta comparativa como base para las próximas consultas en este navegador">Establecer</button><button id="cp">Portafolio</button><button id="cv">Vacío</button>
 </div>
-<div class="cmp" id="cmp"><div><h2 style="margin-top:2px">Estadísticos</h2><table id="ct"></table><div class="sub" id="cd" style="margin-top:8px"></div></div><div><div id="cch"></div></div></div>
+<div class="cmp" id="cmp"><div><h2 style="margin-top:2px">Estadísticos</h2><table id="ct"></table><div class="sub" id="cd" style="margin-top:5px"></div><h2 style="margin:5px 0 0">Optimización histórica</h2><div id="opt"></div><div class="sub" id="optNote"></div></div><div><div id="cch"></div></div></div>
 <div class="nt" id="cf"></div>
 </section>
 <section id="p3" class="view" style="display:none">
 <h1>Metodología</h1>
 <div class="method-grid">
+ <div class="mt"><h4>Objetivo</h4><p id="objectiveText" aria-live="polite"></p></div>
  <div class="mt"><h4>1 · Reconciliación</h4><table class="kp" id="kp"></table></div>
  <div class="mt"><h4>2 · Fuentes y fechas</h4><table class="kp">__FECHAS__</table></div>
  <div class="mt"><h4>3 · Criterios de cálculo</h4>__CRITERIOS__</div>
@@ -981,9 +1174,16 @@ details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06
 </div>
 </section>
 <section id="p4" class="view" style="display:none">
-<h1>Privados</h1>
-<div class="sub">Enlaces públicos a negocios y subsidiarias de Berkshire. Un enlace no implica una empresa única.</div>
+<h1 id="privadosTitle">__TITULO_PRIVADOS__</h1>
+<div class="sub">Listado de CNBC; conteo por nombre enlazado único, no por entidad legal. <a href="https://www.berkshirehathaway.com/" target="_blank" rel="noopener">Sitio oficial de Berkshire Hathaway</a>.</div>
 <div class="sb">__SUBS__</div>
+</section>
+<section id="p5" class="view" style="display:none">
+<h1 id="brkFinTitle">Resultados BRK</h1>
+<div class="sub" id="brkFinSub"></div>
+<div class="flow-note" id="brkFinNote"></div>
+<div id="brkFlow"></div>
+<div id="brkSummary"></div>
 </section>
 </main>
 </div>
@@ -991,19 +1191,22 @@ details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <script>
 (function(){
-const D=__DATA__,M=__META__,PX=__PX__,$=id=>document.getElementById(id);
+const D=__DATA__,M=__META__,PX=__PX__,BF=__BRK_FIN__,$=id=>document.getElementById(id);
 if(typeof Plotly==='undefined'){$('g2').innerHTML='<p class="w">No se pudo cargar Plotly (requiere acceso a cdn.plot.ly).</p>';return;}
 const LS={get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}};
-const CS={S:'#6FA3DB',Q:'#F5973A',B:'#6CBF6A'},BG='#30302e',PAL=['#6FA3DB','#F5973A','#6CBF6A','#E8706A','#6CC4BE','#C08BC4','#F2A7B8','#B08968','#E6C84F','#9C86D0','#8FD18F','#5CCBD8'],COL={'Efectivo':'#3FA372','Residual de BRK':'#8b8a85','Resto':'#4f4e49'};
+const CS={S:'#6FA3DB',Q:'#F5973A',B:'#6CBF6A'},BG='#111a20',PAL=['#6FA3DB','#F5973A','#6CBF6A','#E8706A','#6CC4BE','#C08BC4','#F2A7B8','#B08968','#E6C84F','#9C86D0','#8FD18F','#5CCBD8'],COL={'Efectivo':'#54cf7c','Privados BRK':'#a5b4bc','Resto':'#52636b'};
 let w=(()=>{const s=LS.get('cg_pesos_v1');return s&&[s.S,s.Q,s.B].every(x=>Number.isInteger(x)&&x>=0)&&s.S+s.Q+s.B===100?{S:s.S,Q:s.Q,B:s.B}:{S:M.w[0],Q:M.w[1],B:M.w[2]};})(),cn=0;
 const col=l=>COL[l]||(COL[l]=PAL[cn++%PAL.length]);
 const p1=v=>(Math.abs(v)<5e-10?0:v).toFixed(1)+'%',p2=v=>v>1e-10?v.toFixed(2)+'%':'—';
-const H=Math.max(340,Math.min(560,Math.round($('w').clientWidth*.34)));
-['g1','g2','g3'].forEach(i=>$(i).style.height=H+'px');
+function ajustarAlturas(){
+  const h=Math.max(220,Math.min(480,Math.round((window.innerHeight-230)*.62)));
+  ['g1','g2','g3'].forEach(i=>$(i).style.height=h+'px');
+}
+ajustarAlturas();
 function calc(){
   const pb=w.B+w.S*D.bs/100,R=[];
   for(let i=0;i<D.t.length;i++){const S=w.S*D.s[i]/100,Q=w.Q*D.q[i]/100,B=pb*D.b[i]/100,T=S+Q+B;if(T>1e-10)R.push({t:D.t[i],l:D.t[i],n:D.n[i],S:S,Q:Q,B:B,T:T});}
-  const E={t:'Efectivo',l:'Efectivo',n:'Efectivo y equivalentes',S:w.S*D.cs/100,Q:w.Q*D.cq/100,B:pb*D.cb/100},P={t:'Residual de BRK',l:'Residual de BRK',n:'Residual de mercado implícito de Berkshire: capitalización − acciones − efectivo (no es una valuación de negocios)',S:0,Q:0,B:pb*D.bp/100};
+  const E={t:'Efectivo',l:'Efectivo',n:'Efectivo y equivalentes',S:w.S*D.cs/100,Q:w.Q*D.cq/100,B:pb*D.cb/100},P={t:'Privados BRK',l:'Privados BRK',n:'Residual de mercado implícito de Berkshire: capitalización − acciones − efectivo (no es una valuación de negocios)',S:0,Q:0,B:pb*D.bp/100};
   const acc=R.slice().sort((a,b)=>b.T-a.T),sp=[E,P];sp.forEach(x=>x.T=x.S+x.Q+x.B);
   const all=R.concat(sp.filter(x=>x.T>1e-10));all.sort((a,b)=>b.T-a.T||a.l.localeCompare(b.l));
   all.forEach(r=>r.k=(r.S>1e-10)+(r.Q>1e-10)+(r.B>1e-10));
@@ -1011,31 +1214,32 @@ function calc(){
   const tot=all.reduce((s,r)=>s+r.T,0),rest=tot-sel.reduce((s,r)=>s+r.T,0);
   return {pb,all,sel,tot,rest,nres:all.length-sel.length};
 }
-const cfg={displayModeBar:false,responsive:true,scrollZoom:false,doubleClick:false,showAxisDragHandles:false},L0={margin:{l:8,r:8,t:8,b:8},paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',showlegend:false,dragmode:false,font:{size:12,color:'#c2c0b6'},hoverlabel:{bgcolor:'#1f1e1d',bordercolor:'#4a4944',font:{color:'#faf9f5',size:12}}};
+const cfg={displayModeBar:false,responsive:true,scrollZoom:false,doubleClick:false,showAxisDragHandles:false},L0={margin:{l:8,r:8,t:8,b:8},paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',showlegend:false,dragmode:false,font:{size:14,color:'#d0dbe0'},hoverlabel:{bgcolor:'#111a20',bordercolor:'#e5b940',font:{color:'#f3f7f8',size:13}}};
 const pie=(lb,vl,cl,t,rot,dom)=>({type:'pie',hole:.58,rotation:rot||0,domain:dom||{x:[0,1],y:[0,1]},labels:lb,values:vl,marker:{colors:cl,line:{color:BG,width:2}},sort:false,direction:'clockwise',automargin:true,
   texttemplate:'%{label}<br>%{value:.'+t+'f}%',textposition:'outside',hovertemplate:'%{label}: %{value:.1f}%<extra></extra>'});
 function render(){
   const c=calc(),ov=c.all.filter(r=>r.k>1).length,n=[w.S,w.Q,w.B].filter(x=>x>0).length;
-  $('tt').innerHTML='Cartera global: <span class="S">SPY '+w.S+'%</span> + <span class="Q">QQQ '+w.Q+'%</span> + <span class="B">BRK '+w.B+'%</span>';
+  $('tt').innerHTML='Cartera: <span class="S">SPY '+w.S+'%</span> + <span class="Q">QQQ '+w.Q+'%</span> + <span class="B">BRK '+w.B+'%</span>';
   $('st').textContent=c.all.length+' activos · '+ov+' con solapamiento · consulta: '+M.consulta;
   $('s1').textContent=n+(n>1?' asignaciones':' asignación');
   $('s2').textContent=c.sel.length+' primeros activos';
   $('s3').textContent=c.nres?c.sel.length+' primeros y '+c.nres+' en resto':'todos los activos';
   const ks=['S','Q','B'].filter(k=>w[k]>0);
   Plotly.react('g1',[pie(ks.map(k=>({S:'SPY',Q:'QQQ',B:'BRK'}[k])),ks.map(k=>w[k]),ks.map(k=>CS[k]),0,0,{x:[.04,.96],y:[.04,.96]})],L0,cfg);
-  const ys=c.sel.map(r=>r.l),mx=Math.max(...c.sel.map(r=>r.T)),tr=[];
+  const ys=c.sel.map(r=>r.l==='Privados BRK'?'Privados de BRK':r.l),mx=Math.max(...c.sel.map(r=>r.T)),tr=[];
   for(const k of ['S','Q','B'])tr.push({type:'bar',orientation:'h',name:{S:'SPY',Q:'QQQ',B:'BRK'}[k],x:c.sel.map(r=>r[k]),y:ys,marker:{color:CS[k]},customdata:c.sel.map(r=>r.n),
     hovertemplate:'%{customdata}<br>'+{S:'Vía SPY',Q:'Vía QQQ',B:'Vía BRK'}[k]+': %{x:.1f}%<extra></extra>'});
-  tr.push({type:'scatter',mode:'text',x:c.sel.map(r=>r.T+mx*.015),y:ys,text:c.sel.map(r=>p1(r.T)),textposition:'middle right',textfont:{color:'#c2c0b6'},showlegend:false,hoverinfo:'skip',cliponaxis:false});
+  tr.push({type:'scatter',mode:'text',x:c.sel.map(r=>r.T+mx*.015),y:ys,text:c.sel.map(r=>p1(r.T)),textposition:'middle right',textfont:{color:'#d0dbe0',size:13},showlegend:false,hoverinfo:'skip',cliponaxis:false});
   Plotly.react('g2',tr,Object.assign({},L0,{barmode:'stack',margin:{l:8,r:36,t:8,b:28},
-    xaxis:{ticksuffix:'%',gridcolor:'#3d3d3a',linecolor:'#3d3d3a',zeroline:false,range:[0,mx*1.16],fixedrange:true},
+    xaxis:{ticksuffix:'%',gridcolor:'#293841',linecolor:'#293841',zeroline:false,range:[0,mx*1.16],fixedrange:true},
     yaxis:{autorange:'reversed',automargin:true,type:'category',ticks:'outside',ticklen:8,tickcolor:'rgba(0,0,0,0)',fixedrange:true}}),cfg);
   const lb=c.sel.map(r=>r.l).concat(c.rest>1e-9?['Resto']:[]),vl=c.sel.map(r=>r.T).concat(c.rest>1e-9?[c.rest]:[]);
   Plotly.react('g3',[pie(lb,vl,lb.map(col),1,75,{x:[.16,.84],y:[.1,.9]})],L0,cfg);
-  const sum=k=>c.all.reduce((s,r)=>s+r[k],0),eff=c.all.find(r=>r.l==='Efectivo'),prv=c.all.find(r=>r.l==='Residual de BRK');
+  const sum=k=>c.all.reduce((s,r)=>s+r[k],0),eff=c.all.find(r=>r.l==='Efectivo'),prv=c.all.find(r=>r.l==='Privados BRK');
   $('kp').innerHTML='<tr><td>Asignación SPY / QQQ / BRK</td><td>'+w.S+'% / '+w.Q+'% / '+w.B+'%</td></tr><tr><td>BRK recibido vía SPY</td><td>'+p1(w.S*D.bs/100)+'</td></tr><tr><td>BRK descompuesto (directo + vía SPY)</td><td>'+p1(c.pb)+'</td></tr>'+
    '<tr><td>Aporte final de SPY / QQQ / BRK</td><td>'+p1(sum('S'))+' / '+p1(sum('Q'))+' / '+p1(sum('B'))+'</td></tr>'+
-   '<tr><td>Efectivo / Residual de BRK</td><td>'+p1(eff?eff.T:0)+' / '+p1(prv?prv.T:0)+'</td></tr><tr><td><b>Total</b></td><td><b>'+p1(c.tot)+'</b></td></tr>';
+   '<tr><td>Efectivo / Privados BRK</td><td>'+p1(eff?eff.T:0)+' / '+p1(prv?prv.T:0)+'</td></tr><tr><td><b>Total</b></td><td><b>'+p1(c.tot)+'</b></td></tr>';
+  $('tableTitle').textContent='Tabla completa de la cartera global: '+c.all.length+' activos';
   if($('dt').open)$('tf').innerHTML='<tr><th>N.º</th><th>Símbolo</th><th>Empresa</th><th>SPY</th><th>QQQ</th><th>BRK</th><th>Final</th><th>Fuentes</th></tr>'+
    c.all.map((r,i)=>'<tr><td>'+(i+1)+'</td><td>'+r.t+'</td><td>'+r.n+'</td><td>'+p2(r.S)+'</td><td>'+p2(r.Q)+'</td><td>'+p2(r.B)+'</td><td><b>'+p2(r.T)+'</b></td><td>'+
    [r.S>1e-10?'SPY':'',r.Q>1e-10?'QQQ':'',r.B>1e-10?'BRK':''].filter(Boolean).join(' + ')+'</td></tr>').join('');
@@ -1056,13 +1260,13 @@ $('eq').onclick=()=>{w={S:34,Q:33,B:33};sync();go();};
 $('dt').ontoggle=render;
 
 // ---------------- comparativa cuantitativa ----------------
-const CP={CG:'#D97757',SPY:'#6FA3DB',QQQ:'#F5973A','BRK-A':'#6CBF6A'},LB={CG:'Cartera global',SPY:'SPY',QQQ:'QQQ','BRK-A':'BRK'},OB=['CG','SPY','QQQ','BRK-A'];
+const CP={CG:'#e5b940',SPY:'#6FA3DB',QQQ:'#F5973A','BRK-A':'#6CBF6A'},LB={CG:'Cartera',SPY:'SPY',QQQ:'QQQ','BRK-A':'BRK'},OB=['CG','SPY','QQQ','BRK-A'];
 const DIRECCION_DELTA={tot:1,ann:1,vol:-1,dsd:-1,mdd:1,dist:1,rr:1};
 const DIRECCION_VALOR={tot:1,ann:1,vol:-1,dsd:-1,mdd:1,dist:1,rr:1,vm:1};
-const TONO_RANK={mejor:'rgba(108,191,106,.22)',medio:'rgba(230,200,79,.18)',peor:'rgba(232,112,106,.22)'};
+const TONO_RANK={mejor:'rgba(112,220,139,.24)',medio:'rgba(229,185,64,.2)',peor:'rgba(255,117,117,.24)'};
 let tab=1,cmpOK=false,C={chk:{CG:1,SPY:1,QQQ:1,'BRK-A':1},x:M.otro||'',dA:'CG',dB:'SPY'},lgx=false,ca=0,cb=0,busy=false,bound=false,N=0,TS=[],MO=[];const cache={};
 const colK=k=>CP[k]||'#B79CED',nmK=k=>LB[k]||k;
-const colorDelta=(k,delta,d)=>{const visible=Number(delta.toFixed(d))*DIRECCION_DELTA[k];return visible>0?'#6CBF6A':visible<0?'#E8706A':'#9a988f';};
+const colorDelta=(k,delta,d)=>{const visible=Number(delta.toFixed(d))*DIRECCION_DELTA[k];return visible>0?'#6CBF6A':visible<0?'#ff8585':'#a5b4bc';};
 function puntajeFila(k,v){
   if(k==='cor')return-Math.abs(v);                 // menor correlación absoluta = más diversificación
   if(k==='beta')return-Math.abs(v-1);              // beta más próxima a 1
@@ -1099,16 +1303,68 @@ function selK(){
   OB.forEach(k=>{if(a.includes(k))C.chk[k]=1;});return a;
 }
 function stats(keys,a,b,ref){
-  const S=keys.map(get),a2=Math.max(a,...S.map(x=>x.s));if(b-a2<5)return null;
+  const S=keys.map(get),a2=Math.max(a,...S.map(x=>x.s));if(b-a2<1)return null;
   const R=k=>{const p=get(k).p,r=[];for(let i=a2+1;i<=b;i++)r.push(p[i]/p[i-1]-1);return r;};
   const dias=(TS[b]-TS[a2])/864e5,rr=R(ref),mR=mean(rr),res={};let vR=0;rr.forEach(x=>vR+=(x-mR)*(x-mR));
   keys.forEach(k=>{
-    const o=get(k),p=o.p,r=R(k),F=r.length/(dias/365.25),tot=p[b]/p[a2]-1,ann=dias>=30?Math.pow(1+tot,365.25/dias)-1:NaN,vol=sd(r)*Math.sqrt(F);
-    const dsd=Math.sqrt(r.reduce((s,x)=>s+(x<0?x*x:0),0)/r.length)*Math.sqrt(F);let mdd=0,pk=-Infinity,ddb=0;for(let i=a2;i<=b;i++){const v=p[i];if(v>pk)pk=v;ddb=(v/pk-1)*100;if(ddb<mdd)mdd=ddb;}   // pico medido dentro del rango
+    const o=get(k),p=o.p,r=R(k),F=r.length/(dias/365.25),tot=p[b]/p[a2]-1,ann=dias>=30?Math.pow(1+tot,365.25/dias)-1:NaN,vol=r.length>1?sd(r)*Math.sqrt(F):NaN;
+    const dsd=r.length>1?Math.sqrt(r.reduce((s,x)=>s+(x<0?x*x:0),0)/r.length)*Math.sqrt(F):NaN;let mdd=0,pk=-Infinity,ddb=0;for(let i=a2;i<=b;i++){const v=p[i];if(v>pk)pk=v;ddb=(v/pk-1)*100;if(ddb<mdd)mdd=ddb;}   // pico medido dentro del rango
     const mk=mean(r);let cv=0,vk=0;for(let i=0;i<r.length;i++){cv+=(r[i]-mk)*(rr[i]-mR);vk+=(r[i]-mk)*(r[i]-mk);}
-    res[k]={tot:tot*100,ann:ann*100,vol:vol*100,dsd:dsd*100,mdd:mdd,dist:ddb,rr:ann/vol,cor:cv/Math.sqrt(vk*vR),beta:cv/vR,vm:(PX.m[k]||{}).v};
+    res[k]={tot:tot*100,ann:ann*100,vol:vol*100,dsd:dsd*100,mdd:mdd,dist:ddb,rr:ann/vol,cor:vk>0&&vR>0?cv/Math.sqrt(vk*vR):NaN,beta:vR>0?cv/vR:NaN,vm:(PX.m[k]||{}).v};
   });
   return {a2:a2,res:res,dias:dias,n:b-a2};
+}
+const OPT_KEYS=['CG','SPY','QQQ','BRK-A'],OPT_LABELS={CG:'Cartera',SPY:'SPY',QQQ:'QQQ','BRK-A':'BRK'};
+function metricOpt(weights,returns,dias){
+  const n=returns[0].length;if(!n||dias<=0)return null;
+  let log=0,sum=0,sum2=0;
+  for(let i=0;i<n;i++){
+    let r=0;for(let k=0;k<weights.length;k++)r+=weights[k]*returns[k][i];
+    if(!Number.isFinite(r)||r<=-1)return null;
+    log+=Math.log1p(r);sum+=r;sum2+=r*r;
+  }
+  const m=sum/n,variance=Math.max(0,(sum2-n*m*m)/(n-1)),vol=Math.sqrt(variance*n/(dias/365.25)),cagr=Math.expm1(log*365.25/dias);
+  return Number.isFinite(cagr)&&Number.isFinite(vol)&&vol>1e-12?{weights:weights,cagr:cagr,vol:vol,score:cagr/vol}:null;
+}
+function markowitz(a,b){
+  const series=OPT_KEYS.map(get);if(series.some(x=>!x))return null;
+  const first=Math.max(a,...series.map(x=>x.s)),n=b-first;if(n<60)return {short:true,first:first};
+  const returns=series.map(x=>{const r=[];for(let i=first+1;i<=b;i++)r.push(x.p[i]/x.p[i-1]-1);return r;});
+  const days=(TS[b]-TS[first])/864e5;if(days<=0)return {short:true,first:first};
+  const points=[],units=20;
+  for(let i=0;i<=units;i++)for(let j=0;j<=units-i;j++)for(let k=0;k<=units-i-j;k++){
+    const w=[i,j,k,units-i-j-k].map(x=>x/units),m=metricOpt(w,returns,days);if(m)points.push(m);
+  }
+  if(!points.length)return null;
+  let best=points.reduce((x,y)=>y.score>x.score?y:x);
+  for(let pass=0;pass<24;pass++){
+    let next=best;
+    for(let i=0;i<4;i++)for(let j=0;j<4;j++)if(i!==j&&best.weights[i]>=.01){
+      const w=best.weights.slice();w[i]-=.01;w[j]+=.01;const m=metricOpt(w,returns,days);
+      if(m&&m.score>next.score+1e-12)next=m;
+    }
+    if(next===best)break;best=next;
+  }
+  const sorted=points.slice().sort((x,y)=>x.vol-y.vol||y.cagr-x.cagr),frontier=[];let high=-Infinity;
+  for(const p of sorted)if(p.cagr>high+1e-9){frontier.push(p);high=p.cagr;}
+  return {points:points,frontier:frontier,best:best,days:days,n:n,first:first,returns:returns};
+}
+function drawMarkowitz(a,b){
+  const h=Math.max(150,Math.min(190,Math.round((window.innerHeight-500)*.45)));$('opt').style.height=h+'px';
+  const result=markowitz(a,b);
+  if(!result){$('optNote').textContent='No hay datos comunes para los cuatro activos.';Plotly.react('opt',[],{...L0,height:h,margin:{l:35,r:8,t:4,b:28}},cfg);return;}
+  if(result.short){$('optNote').textContent='Requiere al menos 60 ruedas comunes; con menos observaciones no se estima el riesgo.';Plotly.react('opt',[],{...L0,height:h,margin:{l:35,r:8,t:4,b:28}},cfg);return;}
+  const punto=(nombre,w,color,symbol)=>{const m=metricOpt(w,result.returns,result.days);return m?{x:[m.vol*100],y:[m.cagr*100],name:nombre,mode:'markers',type:'scatter',marker:{size:11,color:color,symbol:symbol,line:{color:'#0b1116',width:1}},hovertemplate:nombre+'<br>Rendimiento anual: %{y:.1f}%<br>Volatilidad: %{x:.1f}%<extra></extra>'}:null;};
+  const traces=[
+    {x:result.points.map(p=>p.vol*100),y:result.points.map(p=>p.cagr*100),name:'Portafolios (paso 5%)',mode:'markers',type:'scatter',marker:{size:3,color:'rgba(154,152,143,.35)'},hoverinfo:'skip'},
+    {x:result.frontier.map(p=>p.vol*100),y:result.frontier.map(p=>p.cagr*100),name:'Frontera eficiente',mode:'lines+markers',type:'scatter',line:{color:'#d0dbe0',width:1},marker:{size:4,color:'#d0dbe0'},hoverinfo:'skip'}
+  ];
+  OPT_KEYS.forEach((k,i)=>{const w=[0,0,0,0];w[i]=1;const p=punto(OPT_LABELS[k],w,colK(k),'circle');if(p)traces.push(p);});
+  const eq=punto('Equiponderado',[.25,.25,.25,.25],'#e5b940','diamond'),op={x:[result.best.vol*100],y:[result.best.cagr*100],name:'Óptimo',mode:'markers',type:'scatter',marker:{size:14,color:'#ff8585',symbol:'star'},customdata:[result.best.weights.map(x=>Math.round(x*100))],hovertemplate:'Óptimo<br>'+OPT_KEYS.map((k,i)=>OPT_LABELS[k]+': %{customdata['+i+']}%').join('<br>')+'<br>Rendimiento anual: %{y:.1f}%<br>Volatilidad: %{x:.1f}%<extra></extra>'};
+  if(eq)traces.push(eq);traces.push(op);
+  Plotly.react('opt',traces,Object.assign({},L0,{height:h,showlegend:false,margin:{l:42,r:8,t:4,b:34},xaxis:{title:{text:'Volatilidad anual',font:{size:11}},ticksuffix:'%',gridcolor:'#293841',tickfont:{size:11}},
+    yaxis:{title:{text:'CAGR',font:{size:11}},ticksuffix:'%',gridcolor:'#293841',tickfont:{size:11}}}),{displayModeBar:false,responsive:true});
+  $('optNote').textContent='Long-only; máximo CAGR/volatilidad anualizada en '+(result.days/365.25).toFixed(1)+' años. Malla 5% refinada a 1%; rebalanceo diario. Menos de 1 año: anualización ruidosa.';
 }
 function initC(){
   cmpOK=true;
@@ -1126,7 +1382,7 @@ function initC(){
   $('ce').onclick=function(){aviso(this,LS.set('cg_comp_v1',C));};
   $('cp').onclick=()=>{C={chk:{CG:1,SPY:1,QQQ:1,'BRK-A':1},x:'',dA:'CG',dB:'SPY'};drawC();};
   $('cv').onclick=()=>{C={chk:{CG:0,SPY:0,QQQ:0,'BRK-A':0},x:'',dA:'CG',dB:'SPY'};drawC();};
-  const hc=Math.max(460,Math.min(700,Math.round($('w').clientWidth*.4)));$('cch').style.height=hc+'px';
+  const hc=Math.max(180,Math.min(620,window.innerHeight-290));$('cch').style.height=hc+'px';
   const k0=selK();ca=Math.max(0,...k0.map(k=>get(k).s));cb=N-1;
   drawC();
 }
@@ -1138,11 +1394,11 @@ function drawC(){
   document.querySelectorAll('#chips input').forEach(e=>e.checked=!!C.chk[e.dataset.k]);
   if(keys.length<2||!get(ref)||!get(C.dA)){$('cs').innerHTML='<span class="w">Faltan datos de precios para los activos elegidos.</span>';return;}
   const st=stats(keys,ca,cb,ref);if(!st){$('cs').innerHTML='<span class="w">Rango sin datos comunes suficientes: ampliarlo.</span>';return;}
-  const a2=st.a2,res=st.res;
+  const a2=st.a2,res=st.res;ca=a2;
   $('cs').textContent='Rango analizado: '+fd(a2)+' a '+fd(cb)+' · '+(st.dias/365.25).toFixed(1)+' años · '+st.n+' ruedas';
-  const R=[['Retorno total (punta a punta)','tot',0,'%',1],['Rendimiento anual','ann',1,'%',1],['Volatilidad anual','vol',1,'%',1],['Volatilidad negativa anual','dsd',1,'%',1],
-    ['Máxima caída del rango','mdd',0,'%',1],['Distancia al máximo del rango','dist',1,'%',1],['Rendimiento anual / volatilidad','rr',2,'',1],
-    ['Correlación diaria frente a '+nmK(ref),'cor',2,'',0],['Beta frente a '+nmK(ref),'beta',2,'',0],['Valor negociado diario promedio, 3 meses (millones)','vm',0,'',0]];
+  const R=[['Retorno total','tot',0,'%',1],['Rendimiento anual','ann',1,'%',1],['Volatilidad anual','vol',1,'%',1],['Volatilidad negativa anual','dsd',1,'%',1],
+    ['Máxima caída del rango','mdd',0,'%',1],['Distancia al máximo','dist',1,'%',1],['Rend./vol. anual','rr',2,'',1],
+    ['Correlación vs. '+nmK(ref),'cor',2,'',0],['Beta vs. '+nmK(ref),'beta',2,'',0],['Negociado, 3 meses (M USD)','vm',0,'',0]];
   const monedas=keys.filter(k=>k!=='CG').map(k=>(PX.m[k]||{}).c||'s/d'),volumenComparable=monedas.length>0&&monedas[0]!=='s/d'&&monedas.every(m=>m===monedas[0]);
   let h='<tr><th></th>'+keys.map(k=>'<th style="color:'+colK(k)+'">'+nmK(k)+'</th>').join('')+'<th>Δ</th></tr>';
   for(const [l,k,d,u,dl] of R){
@@ -1151,11 +1407,12 @@ function drawC(){
     const delta=dl?res[C.dA][k]-res[C.dB][k]:0,estilo=dl?' style="color:'+colorDelta(k,delta,d)+'"':'';
     h+='<td><b'+estilo+'>'+(dl?fm(delta,d,u,true):'')+'</b></td></tr>';
   }
-  $('ct').innerHTML=h;$('cd').textContent='Δ = '+nmK(C.dA)+' menos '+nmK(C.dB)+' · Verde: mejor; amarillo: intermedio; rojo: peor entre los activos elegidos. Correlación: menor |valor|; beta: más cerca de 1; valor negociado: mayor liquidez (si coincide la moneda).';
+  $('ct').innerHTML=h;$('cd').textContent='Δ = '+nmK(C.dA)+' − '+nmK(C.dB)+' · Verde: mejor, amarillo: medio, rojo: peor. Correlación: menor |r|; beta: más cerca de 1; negociado: mayor si coincide la moneda.';
   $('cf').innerHTML='<div>'+keys.map(k=>'<b style="color:'+colK(k)+'">'+nmK(k)+'</b>: '+(k==='CG'?'SPY '+w.S+'% · QQQ '+w.Q+'% · BRK '+w.B+'%, rebalanceo trimestral sin fricciones':((PX.m[k]||{}).n||k)+' · '+((PX.m[k]||{}).c||'s/d'))).join(' &nbsp;|&nbsp; ')+'</div>'+
-    '<div>Precios ajustados por dividendos y splits (retorno total). Fuente: Yahoo Finance, actualizada todos los días a las 18:00. Valor negociado: promedio de las últimas 60 ruedas en moneda de cotización; para BRK se suman los montos de las clases A y B.</div>'+
+    '<div>Precios ajustados por dividendos y splits. Fuente: Yahoo Finance, actualizada a las 18:00. Valor negociado (no nominal): cierre × volumen, promedio de 60 ruedas; USD para SPY/QQQ/BRK y BRK suma A + B.</div>'+
     keys.filter(k=>(PX.m[k]||{}).w).map(k=>'<div class="w">Aviso: '+nmK(k)+' es un '+PX.m[k].w+'</div>').join('')+
     (new Set(keys.filter(k=>k!=='CG').map(k=>(PX.m[k]||{}).c)).size>1?'<div class="w">Aviso: monedas distintas entre los activos elegidos; la comparación mezcla efecto cambiario.</div>':'');
+  drawMarkowitz(ca,cb);
   const ys=[],ds=[];let lo=Infinity,hi=-Infinity,mn=0;
   keys.forEach(k=>{const o=get(k),y=new Array(N).fill(null),dd=new Array(N).fill(null),b0=o.p[a2];let pk=-Infinity;
     for(let i=a2;i<N;i++){const v=lgx?100*o.p[i]/b0:(o.p[i]/b0-1)*100;y[i]=v;if(o.p[i]>pk)pk=o.p[i];const d=(o.p[i]/pk-1)*100;dd[i]=d;if(i<=cb){if(v<lo)lo=v;if(v>hi)hi=v;if(d<mn)mn=d;}}
@@ -1163,29 +1420,146 @@ function drawC(){
   const pad=(hi-lo)*.06||1,rg=lgx?[Math.log10(lo/1.04),Math.log10(hi*1.04)]:[lo-pad,hi+pad];
   const tr=[];keys.forEach((k,i)=>tr.push({x:PX.f,y:ys[i],name:nmK(k),type:'scatter',mode:'lines',connectgaps:false,xaxis:'x',yaxis:'y',line:{color:colK(k),width:k==='CG'?2.6:1.6},hovertemplate:'%{fullData.name}: %{y:.1f}'+(lgx?'':'%')+'<extra></extra>'}));
   keys.forEach((k,i)=>tr.push({x:PX.f,y:ds[i],name:nmK(k)+' · caída',type:'scatter',mode:'lines',connectgaps:false,xaxis:'x2',yaxis:'y2',line:{color:colK(k),width:1},hovertemplate:'%{fullData.name}: %{y:.1f}%<extra></extra>'}));
-  const ax={gridcolor:'#3d3d3a',linecolor:'#3d3d3a',zeroline:false,showspikes:true,spikemode:'across',spikethickness:1,spikecolor:'#9a988f',spikedash:'dot',hoverformat:'%d/%m/%Y',type:'date',minallowed:PX.f[0],maxallowed:PX.f[N-1]};
+  const ax={gridcolor:'#293841',linecolor:'#293841',zeroline:false,showspikes:true,spikemode:'across',spikethickness:1,spikecolor:'#a5b4bc',spikedash:'dot',hoverformat:'%d/%m/%Y',type:'date',minallowed:PX.f[0],maxallowed:PX.f[N-1]};
   const lay=Object.assign({},L0,{dragmode:'pan',margin:{l:60,r:14,t:40,b:8},hovermode:'x unified',
     xaxis:Object.assign({},ax,{domain:[0,1],anchor:'y',matches:'x2',showticklabels:false}),
-    xaxis2:Object.assign({},ax,{domain:[0,1],anchor:'y2',range:[PX.f[ca],PX.f[cb]],rangeslider:{visible:true,thickness:.08,bgcolor:'#262624',bordercolor:'#3d3d3a'},
-      rangeselector:{x:0,y:1.0,yanchor:'bottom',bgcolor:'#262624',activecolor:'#4a4944',bordercolor:'#3d3d3a',font:{size:11,color:'#c2c0b6'},buttons:[
-        {count:1,label:'1 mes',step:'month',stepmode:'backward'},{count:6,label:'6 meses',step:'month',stepmode:'backward'},{count:1,label:'En el año',step:'year',stepmode:'todate'},
+    xaxis2:Object.assign({},ax,{domain:[0,1],anchor:'y2',range:[PX.f[ca],PX.f[cb]],rangeslider:{visible:true,thickness:.08,bgcolor:'#111a20',bordercolor:'#293841'},
+      rangeselector:{x:0,y:1.0,yanchor:'bottom',bgcolor:'#111a20',activecolor:'#293841',bordercolor:'#293841',font:{size:11,color:'#d0dbe0'},buttons:[
+        {count:1,label:'1 día',step:'day',stepmode:'backward'},{count:7,label:'1 semana',step:'day',stepmode:'backward'},
+        {count:1,label:'1 mes',step:'month',stepmode:'backward'},{count:3,label:'3 meses',step:'month',stepmode:'backward'},{count:6,label:'6 meses',step:'month',stepmode:'backward'},
+        {count:1,label:'En el año',step:'year',stepmode:'todate'},
         {count:1,label:'1 año',step:'year',stepmode:'backward'},{count:3,label:'3 años',step:'year',stepmode:'backward'},{count:5,label:'5 años',step:'year',stepmode:'backward'},
         {count:10,label:'10 años',step:'year',stepmode:'backward'},{step:'all',label:'Todo'}]}}),
-    yaxis:{domain:[.34,1],anchor:'x',type:lgx?'log':'linear',range:rg,ticksuffix:lgx?'':'%',title:{text:lgx?'Valor de 100 invertidos':'Retorno total acumulado (%)',font:{size:11}},gridcolor:'#3d3d3a',zeroline:!lgx,zerolinecolor:'#5a5954',fixedrange:true},
-    yaxis2:{domain:[0,.28],anchor:'x2',range:[mn*1.1-.5,.8],ticksuffix:'%',title:{text:'Caída desde el máximo del rango (%)',font:{size:11}},gridcolor:'#3d3d3a',zeroline:false,fixedrange:true}});
+    yaxis:{domain:[.34,1],anchor:'x',type:lgx?'log':'linear',range:rg,ticksuffix:lgx?'':'%',title:{text:lgx?'Valor de 100 invertidos':'Retorno total acumulado (%)',font:{size:12}},gridcolor:'#293841',zeroline:!lgx,zerolinecolor:'#52636b',fixedrange:true},
+    yaxis2:{domain:[0,.28],anchor:'x2',range:[mn*1.1-.5,.8],ticksuffix:'%',title:{text:'Caída desde el máximo del rango (%)',font:{size:12}},gridcolor:'#293841',zeroline:false,fixedrange:true}});
   busy=true;Plotly.react('cch',tr,lay,{displayModeBar:false,responsive:true,scrollZoom:true,doubleClick:false}).then(()=>{busy=false;
     if(!bound){bound=true;$('cch').on('plotly_relayout',e=>{
       if(busy)return;let x0,x1,full=false;
       for(const k of ['xaxis2','xaxis']){if(e[k+'.range[0]']!==undefined){x0=e[k+'.range[0]'];x1=e[k+'.range[1]'];break;}if(e[k+'.range']){x0=e[k+'.range'][0];x1=e[k+'.range'][1];break;}if(e[k+'.autorange']){full=true;break;}}
       if(x0===undefined&&!full)return;
-      const r=full?[0,N-1]:idx(x0,x1);if(r[1]-r[0]<5)return;ca=r[0];cb=r[1];drawC();});}});
+      const activos=selK(),inicio=full?Math.max(0,...activos.map(k=>get(k).s)):0,r=full?[inicio,N-1]:idx(x0,x1);if(r[1]-r[0]<1)return;ca=r[0];cb=r[1];drawC();});}});
 }
 function show(n){
-  tab=n;for(let i=1;i<=4;i++){$('p'+i).style.display=i===n?'':'none';$('nav'+i).className=i===n?'on':'';}
+  tab=n;for(let i=1;i<=5;i++){$('p'+i).style.display=i===n?'':'none';$('nav'+i).className=i===n?'on':'';}
   if(n===2){if(!cmpOK)initC();else drawC();setTimeout(()=>{try{Plotly.Plots.resize('cch')}catch(e){}},30);}
   else if(n===1){render();setTimeout(()=>['g1','g2','g3'].forEach(i=>{try{Plotly.Plots.resize(i)}catch(e){}}),30);}
+  else if(n===3)renderObjetivo();
+  else if(n===5)renderBrkFinanzas();
 }
-$('nav1').onclick=()=>show(1);$('nav2').onclick=()=>show(2);$('nav3').onclick=()=>show(3);$('nav4').onclick=()=>show(4);
+function renderObjetivo(){
+  const areas=[...document.querySelectorAll('.nav button[data-purpose]')]
+    .map(b=>{const p=b.dataset.purpose.trim();return p?b.textContent.trim()+': '+p:'';}).filter(Boolean);
+  $('objectiveText').textContent=areas.length?'Esta herramienta permite '+areas.join('; ')+'.':'No hay secciones disponibles para describir.';
+}
+function renderBrkFinanzas(){
+  const box=$('brkFinNote'), summary=$('brkSummary');
+  if(!BF||BF.err){
+    $('brkFinSub').textContent='Datos trimestrales no disponibles.';
+    box.textContent='No se pudo validar el informe oficial: '+((BF&&BF.err)||'respuesta vacía');
+    summary.innerHTML='';Plotly.react('brkFlow',[],{...L0,height:360,annotations:[]},cfg);return;
+  }
+  const [anio,mes,dia]=BF.corte.split('-');
+  $('brkFinSub').textContent=BF.periodo+' · cierre '+dia+'/'+mes+'/'+anio+' · comparación '+BF.comparacion+' · valores en '+BF.unidad;
+  const puedeMostrarOperacion=BF.actual.ingresos>=0&&BF.actual.gastos>=0&&BF.operativo>=0;
+  box.textContent=BF.puente_completo
+    ?'Ingresos segmentados y resultado consolidado, conciliados con el informe oficial. Tocá o señalá un nodo para ver valores y variación interanual.'
+    :!BF.segmentos_no_negativos
+      ?'Hay ingresos segmentados negativos; se omite el Sankey para no convertirlos en flujos positivos. Las cifras originales quedan visibles abajo.'
+      :!puedeMostrarOperacion
+        ?'El resultado operativo no admite un puente positivo completo; se muestran ingresos por segmento y cifras conciliadas, sin flujos inventados.'
+        :'Hay partidas negativas fuera del tramo operativo; el Sankey se limita a ingresos y resultado operativo, y el resto se muestra como cifras.';
+  if(/^https:\/\/www\.berkshirehathaway\.com\/[^?#]+\.pdf(?:\?[^#]*)?$/i.test(BF.fuente)){
+    const link=document.createElement('a');link.href=BF.fuente;link.target='_blank';link.rel='noopener';link.textContent='Abrir informe oficial';
+    box.appendChild(document.createTextNode(' '));box.appendChild(link);
+  }
+  const f=(v)=>'US$ '+(v/1000).toFixed(1)+' mil millones';
+  const pct=(c,p)=>p===0?'variación s/d':((c-p)/Math.abs(p)*100).toFixed(1).replace('-', '−')+'% interanual';
+  const metrics=[
+    ['Ingresos totales','ingresos'],['Costos y gastos','gastos'],
+    ['Ganancias de inversión','ganancias_inversion'],['Método de participación','equity'],
+    ['Resultado antes de impuestos','antes_impuestos'],['Impuestos','impuestos'],
+    ['Ganancia neta atribuible a BRK','atribuible']
+  ];
+  const filasResumen=metrics.map(([label,key])=>'<div><b>'+label+'</b>'+f(BF.actual[key])+' · '+pct(BF.actual[key],BF.anterior[key])+'<br>Anterior: '+f(BF.anterior[key])+'</div>');
+  if(!BF.segmentos_no_negativos)BF.segmentos.forEach(s=>filasResumen.push(
+    '<div><b>Ingresos · '+s.nombre+'</b>'+f(s.actual)+' · '+pct(s.actual,s.anterior)+'<br>Anterior: '+f(s.anterior)+'</div>'
+  ));
+  summary.innerHTML=filasResumen.join('');
+  summary.style.display=BF.puente_completo?'none':'grid';
+  const compact=window.innerWidth<900;
+  const height=Math.max(320,Math.min(650,window.innerHeight-(compact?230:220)));
+  if(!BF.segmentos_no_negativos){
+    Plotly.react('brkFlow',[],{...L0,height:Math.min(height,260),annotations:[{
+      text:'Sankey omitido: hay ingresos por segmento negativos.',
+      xref:'paper',yref:'paper',x:.5,y:.5,showarrow:false,font:{size:13,color:'#d0dbe0'}
+    }]},cfg);
+    return;
+  }
+  const nombresMovil={'BNSF':'BNSF','Energía (BHE)':'BHE','Manufactura':'Manuf.','Servicios y comercio minorista':'Serv.',
+    'Pilot':'Pilot','McLane':'McLane','Seguros, corporativo y otros':'Seguros','Ingresos totales':'Ingresos',
+    'Costos y gastos':'Costos','Ingresos menos gastos':'Operativo','Ganancias de inversión':'Inv.',
+    'Resultado antes de participadas':'Ant. partic.','Método de participación':'Participadas',
+    'Resultado antes de impuestos':'Ant. imp.','Impuestos':'Impuestos','Ganancia neta':'Neta',
+    'No controlantes':'No controlantes','Atribuible a accionistas BRK':'BRK'};
+  const labels=[],fullLabels=[],values=[],previous=[],colors=[],sources=[],targets=[],flows=[],flowColors=[];
+  const addNode=(label,current,prior,color)=>{
+    const change=prior===0?null:(current-prior)/Math.abs(prior)*100;
+    const yoy=change===null?'i.a. s/d':(change>0?'+':'')+change.toFixed(1)+'% i.a.';
+    const i=labels.length;
+    labels.push(compact?(nombresMovil[label]||label):label+'\n'+f(current)+'\n'+yoy);
+    fullLabels.push(label);
+    values.push(current);previous.push(prior);colors.push(color);
+    return i;
+  };
+  const addFlow=(from,to,value)=>{
+    if(value>0){
+      sources.push(from);targets.push(to);flows.push(value);
+      const rgb=colors[to].match(/[a-f\d]{2}/gi).map(x=>parseInt(x,16));
+      flowColors.push('rgba('+rgb.join(',')+',.25)');
+    }
+  };
+  const seg=BF.segmentos.map(s=>addNode(s.nombre,s.actual,s.anterior,'#538d78'));
+  const revenue=addNode('Ingresos totales',BF.actual.ingresos,BF.anterior.ingresos,'#6cbf6a');
+  BF.segmentos.forEach((s,i)=>addFlow(seg[i],revenue,s.actual));
+  if(puedeMostrarOperacion){
+    const cost=addNode('Costos y gastos',BF.actual.gastos,BF.anterior.gastos,'#c45f68');
+    addFlow(revenue,cost,BF.actual.gastos);
+    const operating=addNode('Ingresos menos gastos',BF.operativo,BF.anterior.ingresos-BF.anterior.gastos,'#e5b940');
+    addFlow(revenue,operating,BF.operativo);
+    if(BF.puente_completo){
+      const gains=addNode('Ganancias de inversión',BF.actual.ganancias_inversion,BF.anterior.ganancias_inversion,'#5daec2');
+      const beforeEquity=addNode('Resultado antes de participadas',BF.actual.antes_equity,BF.anterior.antes_equity,'#5daec2');
+      const equity=addNode('Método de participación',BF.actual.equity,BF.anterior.equity,'#5daec2');
+      const pretax=addNode('Resultado antes de impuestos',BF.actual.antes_impuestos,BF.anterior.antes_impuestos,'#e5b940');
+      const tax=addNode('Impuestos',BF.actual.impuestos,BF.anterior.impuestos,'#c45f68');
+      const net=addNode('Ganancia neta',BF.actual.neto,BF.anterior.neto,'#6cbf6a');
+      const noncontrolling=addNode('No controlantes',BF.actual.no_controlantes,BF.anterior.no_controlantes,'#a5b4bc');
+      const attributable=addNode('Atribuible a accionistas BRK',BF.actual.atribuible,BF.anterior.atribuible,'#6cbf6a');
+      addFlow(operating,beforeEquity,BF.operativo);
+      addFlow(gains,beforeEquity,BF.actual.ganancias_inversion);
+      addFlow(beforeEquity,pretax,BF.actual.antes_equity);
+      addFlow(equity,pretax,BF.actual.equity);
+      addFlow(pretax,tax,BF.actual.impuestos);
+      addFlow(pretax,net,BF.actual.neto);
+      addFlow(net,noncontrolling,BF.actual.no_controlantes);
+      addFlow(net,attributable,BF.actual.atribuible);
+    }
+  }
+  const cd=values.map((v,i)=>[fullLabels[i],v,previous[i],previous[i]===0?null:(v-previous[i])/Math.abs(previous[i])*100]);
+  Plotly.react('brkFlow',[{type:'sankey',arrangement:'snap',
+    node:{label:labels,customdata:cd,pad:compact?8:13,thickness:compact?12:15,line:{color:'#293841',width:1},color:colors,
+      hovertemplate:'%{customdata[0]}<br>Actual: %{customdata[1]:,.0f} US$ M<br>Anterior: %{customdata[2]:,.0f} US$ M<br>Variación: %{customdata[3]:+.1f}%<extra></extra>'},
+    link:{source:sources,target:targets,value:flows,color:flowColors,hovertemplate:'%{value:,.0f} US$ M<extra></extra>'}
+  }],{...L0,height:height,margin:{l:8,r:compact?8:130,t:8,b:8},font:{size:compact?10:11,color:'#d0dbe0'}},cfg);
+}
+$('nav1').onclick=()=>show(1);$('nav2').onclick=()=>show(2);$('nav3').onclick=()=>show(3);$('nav4').onclick=()=>show(4);$('nav5').onclick=()=>show(5);
+let resizeFrame=0;
+window.addEventListener('resize',()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>{
+  ajustarAlturas();
+  if(cmpOK){$('cch').style.height=Math.max(180,Math.min(620,window.innerHeight-290))+'px';if(tab===2)drawC();}
+  if(tab===1)render();
+  if(tab===5&&BF&&!BF.err)renderBrkFinanzas();
+});});
 sync();render();
 })();
 </script>
@@ -1193,6 +1567,8 @@ sync();render();
 
 async def construir():
     raw = await traer()
+    loop = asyncio.get_running_loop()
+    tarea_resultados = loop.run_in_executor(None, bajar_resultados_brk)
     S, Q, B = proc_spy(raw["spy"]), proc_qqq(*raw["qqq"]), proc_brk(*raw["brk"])
     D, subs, gap = armar(S, Q, B, raw["subs"], raw["subs_err"])
     w0 = np.array([Peso_SPY, Peso_QQQ, Peso_BRK], float)
@@ -1208,6 +1584,8 @@ async def construir():
     tks = list(dict.fromkeys(BASE + top + ETFS_EXTRA + extras))
     try: PX = await asyncio.get_running_loop().run_in_executor(None, bajar_precios, tks, nombres, extras)
     except Exception as e: PX = {"err": str(e)[:160]}
+    try: BRK_FIN = await tarea_resultados
+    except Exception as e: BRK_FIN = {"err": f"{type(e).__name__}: {e}"[:240]}
     cierre = ult_cierre(); fila = lambda a, b, c: f"<tr><td>{a}</td><td>{b}</td><td>{c}</td></tr>"
     exc = ", ".join(f"{n} {dmy(d)}" for n, d in B["exc"])
     fechas = (fila("SPY · State Street", dmy(S["fecha"]) + ant(S["fecha"], 4), "Posiciones diarias oficiales") +
@@ -1220,7 +1598,9 @@ async def construir():
                    fmt_variacion(B["cash_neto_cambio"], B["cash_neto_cambio_desde"]) + " · excluye Rail y resta T-Bills a pagar") +
               fila("BRK · capitalización", f'{dmy(cierre)} (último cierre hábil)', fmt_mil_millones(B["cap"])) +
               fila("Precios de la comparativa", "Yahoo Finance · ajustados", "Descarga diaria completa; la fecha de consulta figura arriba"))
-    subs_h = "".join(f'<div>{i+1}. <a href="{u}" target="_blank">{n}</a></div>' for i, (n, u) in enumerate(subs)) or f'<div class="w">No se pudo leer el listado ({raw["subs_err"] or "vacío"}).</div>'
+    subs_h = "".join(f'<div>{i+1}. <a href="{u}" target="_blank" rel="noopener">{n}</a></div>' for i, (n, u) in enumerate(subs)) or f'<div class="w">No se pudo leer el listado ({raw["subs_err"] or "vacío"}).</div>'
+    negocios = contar_negocios(subs)
+    titulo_privados = f"Privados: {negocios} {'negocio' if negocios == 1 else 'negocios'}"
     dif = B["dif_total"]
     ctrl = f"<li><b>Control contra CNBC:</b> posiciones capturadas US$ {B['pub']/1e9:.1f} mil millones; TOTAL US$ {B['total_cnbc']/1e9:.1f} mil millones; diferencia {dif:.2f}% (tolerancia máxima {TOL_TOTAL_BRK:.1f}%).</li>"
     criterios = ("<ul><li><b>Aporte:</b> peso en la fuente × asignación de esa fuente.</li>"
@@ -1228,6 +1608,7 @@ async def construir():
         "<li><b>Tickers:</b> clases conocidas se consolidan; sufijos de mercados extranjeros se conservan.</li>"
         "<li><b>QQQ:</b> solo efectivo identificado va a Efectivo; futuros, garantías, colaterales, dividendos pendientes, divisas y desconocidos quedan separados.</li>"
         "<li><b>Residual BRK:</b> capitalización − posiciones públicas − efectivo bruto; es implícito, no una valuación de privados.</li>"
+        "<li><b>Resultados BRK:</b> PDF trimestral oficial; compara el mismo trimestre interanual por estacionalidad y reconcilia ingresos segmentados y estado consolidado. Si las partidas consolidadas son negativas, se limita al tramo operativo; si un ingreso segmentado es negativo, se omite el Sankey y se muestran las cifras.</li>"
         "<li><b>Vista:</b> gráficos muestran los 10 principales e incluyen Efectivo y Residual; los selectores siempre suman 100.</li></ul>")
     alertas = []
     if gap["S"] > 1e-6: alertas.append(f"<li><b>SPY:</b> {gap['S']:.2f}% quedó explícito como brecha de fuente sin asignar.</li>")
@@ -1246,13 +1627,15 @@ async def construir():
         "<li>Retorno anual compuesto por días corridos; volatilidad diaria anualizada. La negativa usa solo ruedas bajo cero.</li>"
         "<li>Caída máxima y distancia al máximo se miden dentro del período elegido; rendimiento/volatilidad no resta tasa libre de riesgo.</li>"
         "<li>Correlación y beta usan como referencia el segundo activo de Δ; Δ = primero − segundo.</li>"
-        "<li>Valor negociado = promedio de 60 ruedas en moneda de cotización; BRK suma las clases A y B.</li>"
+        "<li>Valor negociado (no nominal) = cierre × volumen, promedio de 60 ruedas; USD para SPY/QQQ/BRK y suma A + B para BRK.</li>"
+        "<li>Markowitz: combina Cartera, SPY, QQQ y BRK sin posiciones cortas; maximiza CAGR / volatilidad anualizada del rango. Requiere 60 ruedas; anualizar menos de un año amplifica el ruido.</li>"
         "<li>La página usa precios descargados una vez al día; otros símbolos se agregan en Colab mediante Otro_activo.</li>"
         "<li>Una acción BRK-A equivale a 1.500 BRK-B; la cartera consolida por valor económico. La comparativa usa BRK-A y su retorno representa el de BRK-B.</li></ul>")
     meta = dict(w=w, consulta=AHORA.strftime("%d/%m/%Y %H:%M") + " (hora de Buenos Aires)", otro=(Otro_activo or "").strip().upper())
     j = lambda o: json.dumps(o, separators=(",", ":"), ensure_ascii=False).replace("</", "<\\/")
-    return (HTML_T.replace("__DATA__", j(D)).replace("__META__", j(meta)).replace("__PX__", j(PX)).replace("__FECHAS__", fechas).replace("__CRITERIOS__", criterios)
-            .replace("__SALVEDADES__", salvedades).replace("__COMPARATIVA__", comparativa).replace("__SUBS__", subs_h))
+    return (HTML_T.replace("__DATA__", j(D)).replace("__META__", j(meta)).replace("__PX__", j(PX)).replace("__BRK_FIN__", j(BRK_FIN)).replace("__FECHAS__", fechas).replace("__CRITERIOS__", criterios)
+            .replace("__SALVEDADES__", salvedades).replace("__COMPARATIVA__", comparativa).replace("__SUBS__", subs_h)
+            .replace("__TITULO_PRIVADOS__", titulo_privados))
 
 # ---------- EJECUCIÓN ----------
 EN_COLAB = "google.colab" in sys.modules
