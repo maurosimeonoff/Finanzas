@@ -1,23 +1,25 @@
-# actualizar.py — genera docs/index.html (y docs/vista.png) con la cartera global y la comparativa del día. Lo ejecuta GitHub Actions todos los días a las 18:00
-# (Buenos Aires). Es el mismo programa del cuaderno de Colab, sin la parte interactiva de Colab. Los pesos iniciales se editan abajo; otros símbolos van en activos.txt.
-Peso_SPY = 60
-Peso_QQQ = 25
-Peso_BRK = 15
-Otro_activo = ""
+# actualizar.py — ÚNICA fuente del código. Genera la cartera global y la comparativa del día.
+# GitHub Actions lo ejecuta todos los días a las 18:00 (Buenos Aires) y publica docs/index.html; el cuaderno de Colab (Finanzas-GitHub.ipynb) lo descarga de GitHub
+# y lo ejecuta con sus parámetros. No hay otra copia del programa: toda modificación se hace solo acá.
+# Parámetros: si el que ejecuta (Colab) los define antes, se respetan; si no, valen estos.
+Peso_SPY = globals().get("Peso_SPY", 60)
+Peso_QQQ = globals().get("Peso_QQQ", 25)
+Peso_BRK = globals().get("Peso_BRK", 15)
+Otro_activo = globals().get("Otro_activo", "")
 
 # =====================================================================================================
 # CRITERIOS DE DISEÑO (leer antes de modificar; vigentes para cualquier mejora futura)
 # Objetivo: ponderación económica final de una cartera SPY + QQQ + BRK desarmando cada una en sus empresas (descomposición recursiva).
 # Forma:    una sola celda oculta (formulario) y una sola salida; la salida es una página HTML autosuficiente (datos embebidos, Plotly por CDN).
-# Idioma:   castellano rioplatense, cero anglicismos en tablas y gráficos ("Efectivo", "Privados de BRK", "Resto", "Símbolo"); mayúscula solo inicial.
+# Idioma:   castellano rioplatense, cero anglicismos en tablas y gráficos ("Efectivo", "Residual de BRK", "Resto", "Símbolo"); mayúscula solo inicial.
 # Números:  asignaciones SPY/QQQ/BRK en enteros (60%); todo lo demás con un decimal (x.x%); punto decimal; nunca mezclar "pp" con "%".
 # Valor:    no mostrar lo que no agrega valor ni repetir información (la fecha de consulta aparece una sola vez); sin títulos ni ejes redundantes.
 # Selector: se fija SPY (QQQ y BRK se reparten el resto en su proporción); luego QQQ (solo se ajusta BRK; SPY no se toca); si se mueve BRK se ajustan
 #           SPY y QQQ. Unidad mínima 1%. Siempre suma 100. Todo se recalcula en el navegador, sin volver a consultar las fuentes.
 # Gráficos: Cartera global (asignación), Ponderación en la cartera (10 primeros por fuente, barras apiladas), Composición final (10 primeros + Resto).
-#           Los 10 incluyen siempre "Efectivo" y "Privados de BRK". Colores: SPY #6FA3DB, QQQ #F5973A, BRK #6CBF6A. Nada recortado en ningún ancho.
+#           Los 10 incluyen siempre "Efectivo" y "Residual de BRK". Colores: SPY #6FA3DB, QQQ #F5973A, BRK #6CBF6A. Nada recortado en ningún ancho.
 # Cálculo:  aporte = peso en la fuente × asignación de la fuente; BRK dentro de SPY se reemplaza por la composición de BRK (sin doble conteo);
-#           doble clase por símbolo canónico; cada fuente se reescala a 100%; "Privados de BRK" = capitalización − acciones − efectivo (residual,
+#           doble clase por símbolo canónico; cada fuente se reescala a 100%; "Residual de BRK" = capitalización − acciones − efectivo (residual,
 #           no valuación contable); el efectivo de QQQ incluye futuros y colaterales de divisa; la cartera debe cerrar en 100% (assert).
 # Datos:    sin valores estáticos de respaldo: si una fuente falla se informa cuál y por qué (nunca inventar ni aproximar con otra fuente).
 #           SPY: archivo diario de State Street; QQQ: Invesco (CSV directo, Chrome con lectura de red, Playwright); BRK: CNBC (se reabre la
@@ -28,13 +30,13 @@ Otro_activo = ""
 # Publicación: GitHub Pages desde /docs; GitHub Actions regenera la página todos los días a las 18:00 (hora de Buenos Aires). Salida siempre en
 #           modo nocturno (estética Claude: fondo carbón cálido #262624, texto crema #faf9f5, acento terracota #d97757, títulos en serif),
 #           legible en pantallas anchas y en celulares, con presentación cuidada para lectores no técnicos.
-# Comparativa: pestaña "Comparativa cuantitativa" en la misma página. Activos: SPY, QQQ, BRK (BRK-B en Yahoo), Cartera global y uno más (catálogo).
+# Comparativa: pestaña "Comparativa cuantitativa" en la misma página. Activos: SPY, QQQ, BRK (BRK-A en Yahoo: 1 A = 1.500 B; retorno % equivalente, más historia), Cartera global y uno más (catálogo).
 #           Cartera global = SPY/QQQ/BRK con los pesos del selector, rebalanceo trimestral sin fricciones. Siempre precios ajustados (retorno total).
 #           Δ por defecto = Cartera global menos SPY, pero se elige cualquier par. Métricas: retorno total (0 dec.), rendimiento anual, volatilidad anual y
-#           negativa, distancia al máximo (1 dec.), máxima caída (0 dec.), rendimiento/volatilidad, correlación, beta y volumen promedio de 3 meses.
+#           negativa, distancia al máximo del rango (1 dec.), máxima caída del rango (0 dec.; el pico se mide dentro del rango analizado), rendimiento/volatilidad, correlación, beta y volumen promedio de 3 meses.
 #           Botones: Establecer (guarda en el navegador), Portafolio (SPY+QQQ+BRK+Cartera global, Δ vs SPY), Vacío (solo el par del Δ).
-#           Los precios se descargan en cada ejecución (diaria, 18:00) y se embeben; la página estática no consulta Yahoo: otros símbolos se agregan en
-#           activos.txt del repositorio (o en el parámetro Otro_activo de Colab). El selector y la comparativa guardan su estado con "Establecer".
+#           Los precios se descargan en cada ejecución (diaria, 18:00) y se embeben; la página estática no consulta Yahoo: otro símbolo cualquiera solo en Colab
+#           (parámetro Otro_activo). Sin recorte de historia para los activos del catálogo. El selector y la comparativa guardan su estado con "Establecer".
 # Interfaz: arriba solo lo esencial (selector + 3 gráficos); Metodología, Tabla completa y Negocios privados de BRK van abajo, colapsados. Gráficos sin
 #           zoom ni arrastre de ejes (eje fijo, nunca valores negativos de ponderación).
 # =====================================================================================================
@@ -384,7 +386,7 @@ def armar(S, Q, B, subs, subs_err):
     gap = dict(S=100 - S["bruto"], Q=100 - Q["bruto"], raro=S.get("raro", 0.0))
     return D, lst, gap
 
-GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH, GITHUB_FILE = "maurosimeonoff", "Finanzas", "main", "docs/index.html"
+GITHUB_OWNER, GITHUB_REPO = "maurosimeonoff", "Finanzas"
 URL_WEB = f"https://{GITHUB_OWNER}.github.io/{GITHUB_REPO}/"
 
 def ult_cierre():  # último día hábil (sin considerar feriados de EE.UU.): hoy si es lunes a viernes, si no el viernes anterior
@@ -406,21 +408,9 @@ def pagina(frag):  # envoltorio para publicar como página web independiente
     return ('<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>Cartera global: SPY + QQQ + BRK</title><style>body{margin:0;background:#1f1e1d;padding:18px 10px}</style></head><body>' + frag + '</body></html>')
 
-def publicar_github(html):  # opcional en Colab: sube la página al repositorio con el secreto GH_TOKEN
-    from google.colab import userdata
-    import base64
-    tk = userdata.get("GH_TOKEN")
-    u = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{GITHUB_FILE}"
-    H = {"Authorization": f"Bearer {tk}", "Accept": "application/vnd.github+json"}
-    r = requests.get(u, headers=H, params={"ref": GITHUB_BRANCH}, timeout=30)
-    cuerpo = {"message": "Actualización desde Colab", "branch": GITHUB_BRANCH, "content": base64.b64encode(html.encode("utf-8")).decode("ascii")}
-    if r.status_code == 200: cuerpo["sha"] = r.json()["sha"]
-    requests.put(u, headers=H, json=cuerpo, timeout=60).raise_for_status()
-    return True
-
-BASE = ["SPY", "QQQ", "BRK-B"]
+BASE = ["SPY", "QQQ", "BRK-A"]
 ETFS_EXTRA = ["IWM", "EFA", "EEM", "TLT", "GLD", "VNQ"]
-NOMBRES_ETF = {"SPY": "State Street SPDR S&P 500 ETF Trust", "QQQ": "Invesco QQQ Trust, Series 1", "BRK-B": "Berkshire Hathaway Inc. (Clase B)",
+NOMBRES_ETF = {"SPY": "State Street SPDR S&P 500 ETF Trust", "QQQ": "Invesco QQQ Trust, Series 1", "BRK-A": "Berkshire Hathaway Inc. (Clase A)",
                "IWM": "iShares Russell 2000 ETF", "EFA": "iShares MSCI EAFE ETF", "EEM": "iShares MSCI Emerging Markets ETF",
                "TLT": "iShares 20+ Year Treasury Bond ETF", "GLD": "SPDR Gold Shares", "VNQ": "Vanguard Real Estate ETF"}
 
@@ -435,12 +425,8 @@ def _yf():  # usa yfinance si está instalado y es reciente; si no, lo instala/a
         importlib.reload(yf)
     return yf
 
-def leer_extras():  # símbolos adicionales: activos.txt (uno por línea, # comenta) y el parámetro Otro_activo de Colab
+def leer_extras():  # símbolo adicional opcional: parámetro Otro_activo (Colab)
     ex = []
-    if os.path.exists("activos.txt"):
-        for l in open("activos.txt", encoding="utf-8"):
-            l = l.split("#")[0].strip().upper()
-            if l: ex.append(l)
     if (Otro_activo or "").strip(): ex.append(Otro_activo.strip().upper())
     return list(dict.fromkeys(ex))
 
@@ -460,7 +446,6 @@ def bajar_precios(tks, nombres, extras):  # precios ajustados diarios desde Yaho
         if len(p) < 30: continue
         s = p.reindex(p.index.union(cal)).ffill().reindex(cal)
         i0 = int(np.argmax(s.notna().to_numpy()))
-        if t not in BASE: i0 = max(i0, len(cal) - 3000)           # extras: hasta ~12 años para acotar el tamaño
         v = s.iloc[i0:].dropna(); i0 = len(cal) - len(v)
         dv = (x["Close"] * x["Volume"]).dropna().tail(60).mean() / 1e6 if "Volume" in x else np.nan
         nom, mon = nombres.get(t), "USD"
@@ -563,7 +548,7 @@ details>summary{cursor:pointer;font-size:12px;font-weight:650;letter-spacing:.06
 const D=__DATA__,M=__META__,PX=__PX__,$=id=>document.getElementById(id);
 if(typeof Plotly==='undefined'){$('g2').innerHTML='<p class="w">No se pudo cargar Plotly (requiere acceso a cdn.plot.ly).</p>';return;}
 const LS={get:k=>{try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));return true}catch(e){return false}}};
-const CS={S:'#6FA3DB',Q:'#F5973A',B:'#6CBF6A'},BG='#30302e',PAL=['#6FA3DB','#F5973A','#6CBF6A','#E8706A','#6CC4BE','#C08BC4','#F2A7B8','#B08968','#E6C84F','#9C86D0','#8FD18F','#5CCBD8'],COL={'Efectivo':'#3FA372','Privados de BRK':'#8b8a85','Resto':'#4f4e49'};
+const CS={S:'#6FA3DB',Q:'#F5973A',B:'#6CBF6A'},BG='#30302e',PAL=['#6FA3DB','#F5973A','#6CBF6A','#E8706A','#6CC4BE','#C08BC4','#F2A7B8','#B08968','#E6C84F','#9C86D0','#8FD18F','#5CCBD8'],COL={'Efectivo':'#3FA372','Residual de BRK':'#8b8a85','Resto':'#4f4e49'};
 let w=(()=>{const s=LS.get('cg_pesos_v1');return s&&[s.S,s.Q,s.B].every(x=>Number.isInteger(x)&&x>=0)&&s.S+s.Q+s.B===100?{S:s.S,Q:s.Q,B:s.B}:{S:M.w[0],Q:M.w[1],B:M.w[2]};})(),cn=0;
 const col=l=>COL[l]||(COL[l]=PAL[cn++%PAL.length]);
 const p1=v=>(Math.abs(v)<5e-10?0:v).toFixed(1)+'%',p2=v=>v>1e-10?v.toFixed(2)+'%':'—';
@@ -572,7 +557,7 @@ const H=Math.max(340,Math.min(560,Math.round($('w').clientWidth*.34)));
 function calc(){
   const pb=w.B+w.S*D.bs/100,R=[];
   for(let i=0;i<D.t.length;i++){const S=w.S*D.s[i]/100,Q=w.Q*D.q[i]/100,B=pb*D.b[i]/100,T=S+Q+B;if(T>1e-10)R.push({t:D.t[i],l:D.t[i],n:D.n[i],S:S,Q:Q,B:B,T:T});}
-  const E={t:'Efectivo',l:'Efectivo',n:'Efectivo y equivalentes',S:w.S*D.cs/100,Q:w.Q*D.cq/100,B:pb*D.cb/100},P={t:'Privados de BRK',l:'Privados de BRK',n:'Negocios privados de Berkshire (residual de valor de mercado)',S:0,Q:0,B:pb*D.bp/100};
+  const E={t:'Efectivo',l:'Efectivo',n:'Efectivo y equivalentes',S:w.S*D.cs/100,Q:w.Q*D.cq/100,B:pb*D.cb/100},P={t:'Residual de BRK',l:'Residual de BRK',n:'Residual de mercado implícito de Berkshire: capitalización − acciones − efectivo (no es una valuación de negocios)',S:0,Q:0,B:pb*D.bp/100};
   const acc=R.slice().sort((a,b)=>b.T-a.T),sp=[E,P];sp.forEach(x=>x.T=x.S+x.Q+x.B);
   const all=R.concat(sp.filter(x=>x.T>1e-10));all.sort((a,b)=>b.T-a.T||a.l.localeCompare(b.l));
   all.forEach(r=>r.k=(r.S>1e-10)+(r.Q>1e-10)+(r.B>1e-10));
@@ -601,10 +586,10 @@ function render(){
     yaxis:{autorange:'reversed',automargin:true,type:'category',ticks:'outside',ticklen:8,tickcolor:'rgba(0,0,0,0)',fixedrange:true}}),cfg);
   const lb=c.sel.map(r=>r.l).concat(c.rest>1e-9?['Resto']:[]),vl=c.sel.map(r=>r.T).concat(c.rest>1e-9?[c.rest]:[]);
   Plotly.react('g3',[pie(lb,vl,lb.map(col),1,75,{x:[.16,.84],y:[.1,.9]})],L0,cfg);
-  const sum=k=>c.all.reduce((s,r)=>s+r[k],0),eff=c.all.find(r=>r.l==='Efectivo'),prv=c.all.find(r=>r.l==='Privados de BRK');
+  const sum=k=>c.all.reduce((s,r)=>s+r[k],0),eff=c.all.find(r=>r.l==='Efectivo'),prv=c.all.find(r=>r.l==='Residual de BRK');
   $('kp').innerHTML='<tr><td>Asignación SPY / QQQ / BRK</td><td>'+w.S+'% / '+w.Q+'% / '+w.B+'%</td></tr><tr><td>BRK recibido vía SPY</td><td>'+p1(w.S*D.bs/100)+'</td></tr><tr><td>BRK descompuesto (directo + vía SPY)</td><td>'+p1(c.pb)+'</td></tr>'+
    '<tr><td>Aporte final de SPY / QQQ / BRK</td><td>'+p1(sum('S'))+' / '+p1(sum('Q'))+' / '+p1(sum('B'))+'</td></tr>'+
-   '<tr><td>Efectivo / Privados de BRK</td><td>'+p1(eff?eff.T:0)+' / '+p1(prv?prv.T:0)+'</td></tr><tr><td><b>Total</b></td><td><b>'+p1(c.tot)+'</b></td></tr>';
+   '<tr><td>Efectivo / Residual de BRK</td><td>'+p1(eff?eff.T:0)+' / '+p1(prv?prv.T:0)+'</td></tr><tr><td><b>Total</b></td><td><b>'+p1(c.tot)+'</b></td></tr>';
   if($('dt').open)$('tf').innerHTML='<tr><th>N.º</th><th>Símbolo</th><th>Empresa</th><th>SPY</th><th>QQQ</th><th>BRK</th><th>Final</th><th>Fuentes</th></tr>'+
    c.all.map((r,i)=>'<tr><td>'+(i+1)+'</td><td>'+r.t+'</td><td>'+r.n+'</td><td>'+p2(r.S)+'</td><td>'+p2(r.Q)+'</td><td>'+p2(r.B)+'</td><td><b>'+p2(r.T)+'</b></td><td>'+
    [r.S>1e-10?'SPY':'',r.Q>1e-10?'QQQ':'',r.B>1e-10?'BRK':''].filter(Boolean).join(' + ')+'</td></tr>').join('');
@@ -625,17 +610,17 @@ $('eq').onclick=()=>{w={S:34,Q:33,B:33};sync();go();};
 $('dt').ontoggle=render;
 
 // ---------------- comparativa cuantitativa ----------------
-const CP={CG:'#D97757',SPY:'#6FA3DB',QQQ:'#F5973A','BRK-B':'#6CBF6A'},LB={CG:'Cartera global',SPY:'SPY',QQQ:'QQQ','BRK-B':'BRK'},OB=['CG','SPY','QQQ','BRK-B'];
-let tab=1,cmpOK=false,C={chk:{CG:1,SPY:1,QQQ:1,'BRK-B':1},x:M.otro||'',dA:'CG',dB:'SPY'},lgx=false,ca=0,cb=0,busy=false,bound=false,N=0,TS=[],MO=[];const cache={};
+const CP={CG:'#D97757',SPY:'#6FA3DB',QQQ:'#F5973A','BRK-A':'#6CBF6A'},LB={CG:'Cartera global',SPY:'SPY',QQQ:'QQQ','BRK-A':'BRK'},OB=['CG','SPY','QQQ','BRK-A'];
+let tab=1,cmpOK=false,C={chk:{CG:1,SPY:1,QQQ:1,'BRK-A':1},x:M.otro||'',dA:'CG',dB:'SPY'},lgx=false,ca=0,cb=0,busy=false,bound=false,N=0,TS=[],MO=[];const cache={};
 const colK=k=>CP[k]||'#B79CED',nmK=k=>LB[k]||k;
-function fin(o){const dd=new Float64Array(N).fill(NaN);let m=-Infinity;for(let i=o.s;i<N;i++){const v=o.p[i];if(v>m)m=v;dd[i]=(v/m-1)*100;}o.dd=dd;return o;}
+function fin(o){return o;}
 function ser(k){
   if(cache[k])return cache[k];const o=PX.a[k];if(!o)return null;
   const p=new Float64Array(N).fill(NaN);for(let i=0;i<o.v.length;i++)p[o.s+i]=o.v[i];
   return cache[k]=fin({s:o.s,p:p});
 }
 function cart(){  // cartera con rebalanceo trimestral sin fricciones hacia los pesos del selector
-  const A=['SPY','QQQ','BRK-B'].map(ser);if(A.some(x=>!x))return null;
+  const A=['SPY','QQQ','BRK-A'].map(ser);if(A.some(x=>!x))return null;
   const s=Math.max(...A.map(x=>x.s)),W=[w.S,w.Q,w.B].map(x=>x/100),p=new Float64Array(N).fill(NaN),v=W.slice();p[s]=100;
   for(let i=s+1;i<N;i++){let t=0;for(let k=0;k<3;k++){v[k]*=A[k].p[i]/A[k].p[i-1];t+=v[k];}
     if(MO[i]!==MO[i-1]&&(MO[i]===1||MO[i]===4||MO[i]===7||MO[i]===10))for(let k=0;k<3;k++)v[k]=t*W[k];
@@ -658,9 +643,9 @@ function stats(keys,a,b,ref){
   const dias=(TS[b]-TS[a2])/864e5,rr=R(ref),mR=mean(rr),res={};let vR=0;rr.forEach(x=>vR+=(x-mR)*(x-mR));
   keys.forEach(k=>{
     const o=get(k),p=o.p,r=R(k),F=r.length/(dias/365.25),tot=p[b]/p[a2]-1,ann=dias>=30?Math.pow(1+tot,365.25/dias)-1:NaN,vol=sd(r)*Math.sqrt(F);
-    const dsd=Math.sqrt(r.reduce((s,x)=>s+(x<0?x*x:0),0)/r.length)*Math.sqrt(F);let mdd=0;for(let i=a2;i<=b;i++)if(o.dd[i]<mdd)mdd=o.dd[i];
+    const dsd=Math.sqrt(r.reduce((s,x)=>s+(x<0?x*x:0),0)/r.length)*Math.sqrt(F);let mdd=0,pk=-Infinity,ddb=0;for(let i=a2;i<=b;i++){const v=p[i];if(v>pk)pk=v;ddb=(v/pk-1)*100;if(ddb<mdd)mdd=ddb;}   // pico medido dentro del rango
     const mk=mean(r);let cv=0,vk=0;for(let i=0;i<r.length;i++){cv+=(r[i]-mk)*(rr[i]-mR);vk+=(r[i]-mk)*(r[i]-mk);}
-    res[k]={tot:tot*100,ann:ann*100,vol:vol*100,dsd:dsd*100,mdd:mdd,dist:o.dd[b],rr:ann/vol,cor:cv/Math.sqrt(vk*vR),beta:cv/vR,vm:(PX.m[k]||{}).v};
+    res[k]={tot:tot*100,ann:ann*100,vol:vol*100,dsd:dsd*100,mdd:mdd,dist:ddb,rr:ann/vol,cor:cv/Math.sqrt(vk*vR),beta:cv/vR,vm:(PX.m[k]||{}).v};
   });
   return {a2:a2,res:res,dias:dias,n:b-a2};
 }
@@ -678,8 +663,8 @@ function initC(){
   $('cx').onchange=e=>{C.x=e.target.value;drawC();};$('da').onchange=e=>{C.dA=e.target.value;drawC();};$('db').onchange=e=>{C.dB=e.target.value;drawC();};
   $('lg').onchange=e=>{lgx=e.target.checked;drawC();};
   $('ce').onclick=function(){aviso(this,LS.set('cg_comp_v1',C));};
-  $('cp').onclick=()=>{C={chk:{CG:1,SPY:1,QQQ:1,'BRK-B':1},x:'',dA:'CG',dB:'SPY'};drawC();};
-  $('cv').onclick=()=>{C={chk:{CG:0,SPY:0,QQQ:0,'BRK-B':0},x:'',dA:'CG',dB:'SPY'};drawC();};
+  $('cp').onclick=()=>{C={chk:{CG:1,SPY:1,QQQ:1,'BRK-A':1},x:'',dA:'CG',dB:'SPY'};drawC();};
+  $('cv').onclick=()=>{C={chk:{CG:0,SPY:0,QQQ:0,'BRK-A':0},x:'',dA:'CG',dB:'SPY'};drawC();};
   const hc=Math.max(460,Math.min(700,Math.round($('w').clientWidth*.4)));$('cch').style.height=hc+'px';
   const k0=selK();ca=Math.max(0,...k0.map(k=>get(k).s));cb=N-1;
   drawC();
@@ -695,7 +680,7 @@ function drawC(){
   const a2=st.a2,res=st.res;
   $('cs').textContent='Rango analizado: '+fd(a2)+' a '+fd(cb)+' · '+(st.dias/365.25).toFixed(1)+' años · '+st.n+' ruedas';
   const R=[['Retorno total (punta a punta)','tot',0,'%',1],['Rendimiento anual','ann',1,'%',1],['Volatilidad anual','vol',1,'%',1],['Volatilidad negativa anual','dsd',1,'%',1],
-    ['Máxima caída histórica','mdd',0,'%',1],['Distancia al máximo histórico','dist',1,'%',1],['Rendimiento anual / volatilidad','rr',2,'',1],
+    ['Máxima caída del rango','mdd',0,'%',1],['Distancia al máximo del rango','dist',1,'%',1],['Rendimiento anual / volatilidad','rr',2,'',1],
     ['Correlación diaria frente a '+nmK(ref),'cor',2,'',0],['Beta frente a '+nmK(ref),'beta',2,'',0],['Volumen diario promedio, 3 meses (millones)','vm',0,'',0]];
   let h='<tr><th></th>'+keys.map(k=>'<th style="color:'+colK(k)+'">'+nmK(k)+'</th>').join('')+'<th>Δ</th></tr>';
   for(const [l,k,d,u,dl] of R){
@@ -707,9 +692,9 @@ function drawC(){
     keys.filter(k=>(PX.m[k]||{}).w).map(k=>'<div class="w">Aviso: '+nmK(k)+' es un '+PX.m[k].w+'</div>').join('')+
     (new Set(keys.filter(k=>k!=='CG').map(k=>(PX.m[k]||{}).c)).size>1?'<div class="w">Aviso: monedas distintas entre los activos elegidos; la comparación mezcla efecto cambiario.</div>':'');
   const ys=[],ds=[];let lo=Infinity,hi=-Infinity,mn=0;
-  keys.forEach(k=>{const o=get(k),y=new Array(N).fill(null),dd=new Array(N).fill(null),b0=o.p[a2];
-    for(let i=a2;i<N;i++){const v=lgx?100*o.p[i]/b0:(o.p[i]/b0-1)*100;y[i]=v;if(i>=a2&&i<=cb){if(v<lo)lo=v;if(v>hi)hi=v;if(o.dd[i]<mn)mn=o.dd[i];}}
-    for(let i=o.s;i<N;i++)dd[i]=o.dd[i];ys.push(y);ds.push(dd);});
+  keys.forEach(k=>{const o=get(k),y=new Array(N).fill(null),dd=new Array(N).fill(null),b0=o.p[a2];let pk=-Infinity;
+    for(let i=a2;i<N;i++){const v=lgx?100*o.p[i]/b0:(o.p[i]/b0-1)*100;y[i]=v;if(o.p[i]>pk)pk=o.p[i];const d=(o.p[i]/pk-1)*100;dd[i]=d;if(i<=cb){if(v<lo)lo=v;if(v>hi)hi=v;if(d<mn)mn=d;}}
+    ys.push(y);ds.push(dd);});
   const pad=(hi-lo)*.06||1,rg=lgx?[Math.log10(lo/1.04),Math.log10(hi*1.04)]:[lo-pad,hi+pad];
   const tr=[];keys.forEach((k,i)=>tr.push({x:PX.f,y:ys[i],name:nmK(k),type:'scatter',mode:'lines',connectgaps:false,xaxis:'x',yaxis:'y',line:{color:colK(k),width:k==='CG'?2.6:1.6},hovertemplate:'%{fullData.name}: %{y:.1f}'+(lgx?'':'%')+'<extra></extra>'}));
   keys.forEach((k,i)=>tr.push({x:PX.f,y:ds[i],name:nmK(k)+' · caída',type:'scatter',mode:'lines',connectgaps:false,xaxis:'x2',yaxis:'y2',line:{color:colK(k),width:1},hovertemplate:'%{fullData.name}: %{y:.1f}%<extra></extra>'}));
@@ -722,7 +707,7 @@ function drawC(){
         {count:1,label:'1 año',step:'year',stepmode:'backward'},{count:3,label:'3 años',step:'year',stepmode:'backward'},{count:5,label:'5 años',step:'year',stepmode:'backward'},
         {count:10,label:'10 años',step:'year',stepmode:'backward'},{step:'all',label:'Todo'}]}}),
     yaxis:{domain:[.34,1],anchor:'x',type:lgx?'log':'linear',range:rg,ticksuffix:lgx?'':'%',title:{text:lgx?'Valor de 100 invertidos':'Retorno total acumulado (%)',font:{size:11}},gridcolor:'#3d3d3a',zeroline:!lgx,zerolinecolor:'#5a5954',fixedrange:true},
-    yaxis2:{domain:[0,.28],anchor:'x2',range:[mn*1.1-.5,.8],ticksuffix:'%',title:{text:'Caída desde el máximo histórico (%)',font:{size:11}},gridcolor:'#3d3d3a',zeroline:false,fixedrange:true}});
+    yaxis2:{domain:[0,.28],anchor:'x2',range:[mn*1.1-.5,.8],ticksuffix:'%',title:{text:'Caída desde el máximo del rango (%)',font:{size:11}},gridcolor:'#3d3d3a',zeroline:false,fixedrange:true}});
   busy=true;Plotly.react('cch',tr,lay,{displayModeBar:false,responsive:true,scrollZoom:true,doubleClick:false}).then(()=>{busy=false;
     if(!bound){bound=true;$('cch').on('plotly_relayout',e=>{
       if(busy)return;let x0,x1,full=false;
@@ -776,11 +761,11 @@ async def construir():
         "<li><b>Doble clase.</b> Las acciones con más de una clase (Alphabet, Lennar, Fox, News Corp) se consolidan por símbolo.</li>"
         f"<li><b>Reescalado.</b> Cada fuente se reescala a 100% (brecha de origen menor a {max(abs(gap['S']), abs(gap['Q']), 0.01):.2f}%).</li>"
         "<li><b>Efectivo.</b> El de SPY, QQQ y BRK se agrupa. En QQQ incluye futuros y colaterales de divisa del fondo.</li>"
-        "<li><b>Privados de BRK.</b> Capitalización − acciones − efectivo: un residual de valor de mercado, no una valuación contable.</li>"
-        "<li><b>Gráficos.</b> Los 10 primeros incluyen siempre Efectivo y Privados de BRK; el resto se agrupa.</li>"
+        "<li><b>Residual de BRK.</b> Capitalización − acciones − efectivo: residual de mercado implícito, no una valuación de los negocios privados.</li>"
+        "<li><b>Gráficos.</b> Los 10 primeros incluyen siempre Efectivo y Residual de BRK; el resto se agrupa.</li>"
         "<li><b>Selector.</b> Enteros que suman 100: SPY reparte entre QQQ y BRK; QQQ solo mueve a BRK; BRK reparte entre SPY y QQQ.</li></ol>")
     salvedades = (f"<ul><li><b>Efectivo de BRK:</b> US$ {B['cash']/1e9:.1f} mil millones según CNBC (bruto, incluye el efectivo de BNSF).{neto}</li>"
-        "<li><b>Desfasaje temporal:</b> el efectivo corresponde al último balance trimestral y las acciones se valúan a precio de mercado del último cierre hábil, por lo que Privados de BRK absorbe esa diferencia.</li>"
+        "<li><b>Desfasaje temporal:</b> el efectivo corresponde al último balance trimestral y las acciones se valúan a precio de mercado del último cierre hábil, por lo que Residual de BRK absorbe esa diferencia.</li>"
         "<li><b>Cierre hábil:</b> si se consulta en fin de semana se toma el viernes; no se consideran feriados de EE.UU.</li>"
         "<li><b>Posiciones aproximadas:</b> Bending Spoons es una aproximación según CNBC y las acciones japonesas figuran con su propia fecha.</li>"
         f"{ctrl}<li><b>Sin respaldo estático:</b> si una fuente falla, el programa informa cuál; nunca completa con datos inventados.</li></ul>{aviso}")
@@ -788,30 +773,31 @@ async def construir():
         "<li><b>Cartera global:</b> SPY, QQQ y BRK con los pesos del selector, rebalanceados el primer día hábil de enero, abril, julio y octubre, sin costos ni impuestos.</li>"
         "<li><b>Retorno total:</b> variación punta a punta del rango. <b>Rendimiento anual:</b> compuesto, con días corridos / 365.25.</li>"
         "<li><b>Volatilidad:</b> desvío de los retornos diarios × raíz de las ruedas por año del rango. <b>Negativa:</b> solo retornos bajo cero.</li>"
-        "<li><b>Máxima caída y distancia:</b> contra el máximo histórico de cada serie. <b>Rendimiento / volatilidad:</b> sin tasa libre de riesgo.</li>"
+        "<li><b>Máxima caída y distancia al máximo:</b> medidas dentro del rango analizado (el pico es el máximo del propio rango, rebasado al inicio de la ventana). <b>Rendimiento / volatilidad:</b> sin tasa libre de riesgo.</li>"
         "<li><b>Correlación y beta:</b> frente al segundo activo del Δ. <b>Volumen:</b> promedio de 60 ruedas en moneda de cotización.</li>"
         "<li><b>Δ:</b> primer activo menos segundo, con el mismo formato de cada fila.</li>"
-        "<li><b>Otros símbolos:</b> la página es estática y no consulta Yahoo; se agregan en el archivo activos.txt del repositorio o en el parámetro Otro_activo de Colab.</li></ul>")
+        "<li><b>Otros símbolos:</b> la página es estática y no consulta Yahoo: el selector ofrece el catálogo descargado a las 18:00 (20 mayores posiciones y ETF de referencia); cualquier otro símbolo se consulta en Colab con el parámetro Otro_activo.</li>"
+        "<li><b>BRK-A y BRK-B:</b> 1 acción A equivale a 1.500 acciones B (la A se convierte en B, no al revés); la B tiene 1/1.500 de los derechos económicos y 1/10.000 del voto. La cartera consolida por valor económico; la comparativa usa BRK-A (más historia) y su retorno % es el de la B. Fuente: berkshirehathaway.com/compab.pdf.</li></ul>")
     meta = dict(w=w, consulta=AHORA.strftime("%d/%m/%Y %H:%M") + " (hora de Buenos Aires)", otro=(Otro_activo or "").strip().upper())
     j = lambda o: json.dumps(o, separators=(",", ":"), ensure_ascii=False).replace("</", "<\\/")
     return (HTML_T.replace("__DATA__", j(D)).replace("__META__", j(meta)).replace("__PX__", j(PX)).replace("__FECHAS__", fechas).replace("__CRITERIOS__", criterios)
             .replace("__SALVEDADES__", salvedades).replace("__COMPARATIVA__", comparativa).replace("__SUBS__", subs_h).replace("__NSUBS__", str(len(subs))))
 
-# ---------- EJECUCIÓN AUTOMÁTICA (GitHub Actions) ----------
-async def captura():  # imagen de vista previa para el README (no es crítica: si falla, se sigue)
-    try:
-        from playwright.async_api import async_playwright
-        async with async_playwright() as p:
-            nav = await p.chromium.launch(args=["--no-sandbox"]); pg = await nav.new_page(viewport={"width": 1500, "height": 980})
-            await pg.goto("file://" + os.path.abspath("docs/index.html")); await pg.wait_for_selector("#g1 .main-svg", timeout=30000); await pg.wait_for_timeout(1500)
-            await pg.screenshot(path="docs/vista.png", clip={"x": 0, "y": 0, "width": 1500, "height": 780}); await nav.close()
-    except Exception as e: print("sin captura de vista previa:", e)
+# ---------- EJECUCIÓN ----------
+EN_COLAB = "google.colab" in sys.modules
 
-async def principal():
-    frag = await construir()
-    os.makedirs("docs", exist_ok=True)
-    open("docs/index.html", "w", encoding="utf-8").write(pagina(frag))
-    print("docs/index.html actualizado", AHORA.strftime("%d/%m/%Y %H:%M"))
-    await captura()
+async def principal():  # en Colab muestra la página; en GitHub Actions escribe docs/index.html
+    if EN_COLAB:
+        display(HTML('<div style="font-family:sans-serif;padding:10px;color:#374151">Consultando SPY (State Street), QQQ (Invesco), BRK (CNBC) y precios (Yahoo Finance)… tarda entre 1 y 2 minutos la primera vez.</div>'))
+        try: frag = await construir()
+        except Exception as e:
+            clear_output(wait=True); display(HTML(f'<div style="font-family:sans-serif;color:#b91c1c;padding:12px;border:1px solid #fecaca;border-radius:8px"><b>Error:</b> {e}</div>')); return
+        clear_output(wait=True); display(HTML(frag))
+        display(HTML(f'<div style="font:12px sans-serif;color:#6b7280;padding:2px 18px">Versión web (se actualiza sola todos los días a las 18:00): <a href="{URL_WEB}" target="_blank">{URL_WEB}</a></div>'))
+    else:
+        frag = await construir()
+        os.makedirs("docs", exist_ok=True)
+        open("docs/index.html", "w", encoding="utf-8").write(pagina(frag))
+        print("docs/index.html actualizado", AHORA.strftime("%d/%m/%Y %H:%M"))
 
-asyncio.run(principal())
+if __name__ == "__main__": asyncio.run(principal())
