@@ -36,6 +36,17 @@ class ProcesamientoSpyTests(unittest.TestCase):
         self.assertAlmostEqual(sum(out["w"]) + out["ef"], 100)
         self.assertEqual(len([k for k in out["w"].index if k.startswith("__SPY_ESPECIAL_")]), 2)
 
+    def test_conserva_contra_posicion_con_ticker_alfanumerico_como_especial(self):
+        out = self.parse(
+            [
+                ["AAPL", "Apple Inc.", 99.999997],
+                ["2602335D", "CONTRA HOLOGIC INCORPO", 0.000003],
+            ]
+        )
+
+        self.assertAlmostEqual(out["raro"], 0.000003)
+        self.assertTrue(any("2602335D" in k for k in out["w"].index if k.startswith("__SPY_ESPECIAL_")))
+
     def test_rechaza_fuente_incompleta_y_pesos_negativos(self):
         with self.assertRaisesRegex(RuntimeError, "fecha"):
             raw = self.workbook([["AAPL", "Apple Inc.", 100]])
@@ -45,6 +56,19 @@ class ProcesamientoSpyTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "negativos"):
             self.parse([["AAPL", "Apple Inc.", 101], ["MSFT", "Microsoft", -1]])
+
+    def test_corta_pies_de_pagina_tras_fila_vacia_pero_no_omite_posiciones_sin_peso(self):
+        out = self.parse(
+            [
+                ["AAPL", "Apple Inc.", 100],
+                ["", "", ""],
+                ["", "State Street legal disclaimer", ""],
+            ]
+        )
+        self.assertEqual(out["lineas"], 1)
+
+        with self.assertRaisesRegex(RuntimeError, "no están identificadas"):
+            self.parse([["AAPL", "Apple Inc.", 99], ["", "Unknown instrument", None]])
 
     def test_rechaza_duplicado_crudo_y_especial_material(self):
         with self.assertRaisesRegex(RuntimeError, "repetidos"):
