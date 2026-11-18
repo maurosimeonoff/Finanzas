@@ -1078,6 +1078,7 @@ HTML_T = r'''
 .ctl{display:flex;gap:7px;align-items:center;flex-wrap:wrap;background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:6px 8px}
 .ctl .it{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:650}
 .ctl input[type=range]{width:120px;accent-color:var(--ac)}
+.ctl .S input[type=range],.ctl .Q input[type=range],.ctl .B input[type=range]{accent-color:currentColor}
 .ctl input[type=number]{width:58px;padding:4px 6px;border:1px solid var(--bd);border-radius:7px;font-size:14px;background:#0b1116!important;color:var(--tx)!important}
 .ctl button{font-size:13px;border:1px solid var(--bd);background:var(--bg)!important;color:var(--t2)!important;border-radius:7px;padding:5px 11px;cursor:pointer}
 .ctl button:hover{border-color:var(--ac);color:var(--tx)!important}
