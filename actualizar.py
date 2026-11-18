@@ -553,6 +553,9 @@ def proc_spy(b):
     df = raw.iloc[h + 1:].copy(); df.columns = raw.iloc[h].astype(str).str.strip()
     requeridas = {"Ticker", "Name", "Weight"}
     if not requeridas.issubset(df.columns): raise RuntimeError(f"SPY: faltan columnas oficiales: {sorted(requeridas - set(df.columns))}.")
+    filas_vacias = df.apply(lambda c: c.isna() | c.astype(str).str.strip().eq("")).all(axis=1)
+    if filas_vacias.any():
+        df = df.iloc[:int(np.flatnonzero(filas_vacias.to_numpy())[0])].copy()
     cv = col(df, ["marketvaluebase", "marketvalue"])
     df = df[["Ticker", "Name", "Weight"] + ([cv] if cv else [])].copy()
     if cv: df = df.rename(columns={cv: "Valor mercado"})
@@ -568,7 +571,9 @@ def proc_spy(b):
     nombre = df["Name"].str.upper().str.replace("&AMP;", "&", regex=False)
     dividendos = nombre.str.contains(r"\bPENDING\s+DIVIDENDS?\b", regex=True)
     cash = (nombre.isin(("US DOLLAR", "USD", "CASH", "CASH & EQUIVALENTS")) | df["Ticker"].isin(EFEC)) & ~dividendos
-    especial = ~cash & ~dividendos & (df["Ticker"].eq("") | df["Ticker"].str.match(r"^(?:\d+$|-)"))
+    especial = ~cash & ~dividendos & (
+        df["Ticker"].eq("") | df["Ticker"].str.match(r"^(?:\d+$|-)") | nombre.str.match(r"^CONTRA\b")
+    )
     emp = df[~cash & ~especial].copy()
     emp = emp[~dividendos.loc[emp.index]]
     emp["T"] = emp["Ticker"].map(canon)
