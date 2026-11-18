@@ -683,14 +683,15 @@ def proc_brk(htmls, cuerpo):
         tabla["Symbol"] = tabla["Symbol"].fillna("").astype(str).str.strip()
         tabla.loc[tabla["Symbol"].str.lower().isin(("nan", "none", "n/a", "-")), "Symbol"] = ""
         tabla["Value"] = tabla["Value"].map(monto)
-        if (tabla["Company"].eq("") & (tabla["Symbol"].ne("") | tabla["Value"].notna())).any():
-            errores.append("CNBC: hay filas con valor o símbolo y sin nombre de posición.")
-            continue
-        tabla = tabla[tabla["Company"].ne("")].copy()
         tr = tabla[tabla["Company"].str.upper().eq("TOTAL")]
         if len(tr) != 1 or pd.isna(tr["Value"].iloc[0]) or float(tr["Value"].iloc[0]) <= 0:
             continue
-        holdings = tabla[~tabla["Company"].str.upper().eq("TOTAL")].copy()
+        pos_total = tabla.index.get_loc(tr.index[0])
+        holdings = tabla.iloc[:pos_total].copy()
+        if (holdings["Company"].eq("") & (holdings["Symbol"].ne("") | holdings["Value"].notna())).any():
+            errores.append("CNBC: hay filas con valor o símbolo y sin nombre de posición.")
+            continue
+        holdings = holdings[holdings["Company"].ne("")].copy()
         if holdings.empty or holdings["Value"].isna().any() or (holdings["Value"] < 0).any():
             continue
         try:
