@@ -456,7 +456,34 @@ def descargar_subsidiarias():
     ) from ultimo_error
 
 async def subs_web(nav):
-    return await asyncio.get_running_loop().run_in_executor(None, descargar_subsidiarias)
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, descargar_subsidiarias)
+    except Exception as error_http:
+        ctx = await nav.new_context(user_agent=UA)
+        try:
+            pg = await ctx.new_page()
+            ultimo_error = error_http
+            for intento in range(SUBS_INTENTOS):
+                try:
+                    respuesta = await pg.goto(URL_SUBS, wait_until="domcontentloaded", timeout=30000)
+                    if respuesta is not None and respuesta.status >= 400:
+                        raise RuntimeError(f"HTTP {respuesta.status}")
+                    destino = urlparse(pg.url)
+                    if destino.scheme != "https" or destino.hostname not in (
+                        "berkshirehathaway.com", "www.berkshirehathaway.com"
+                    ):
+                        raise RuntimeError("El directorio de subsidiarias redirigió fuera del sitio oficial.")
+                    return extraer_subsidiarias(await pg.content(), pg.url)
+                except Exception as error:
+                    ultimo_error = error
+                    if intento + 1 < SUBS_INTENTOS:
+                        await pg.wait_for_timeout(2000 * (intento + 1))
+            raise RuntimeError(
+                f"No se pudo validar el directorio oficial por HTTP ni navegador: {ultimo_error}"
+            ) from ultimo_error
+        finally:
+            await ctx.close()
 
 LANDINGS = ("https://www.invesco.com/us/en/financial-products/etfs/invesco-qqq-trust-series-1.html",)
 
